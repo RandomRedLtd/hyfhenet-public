@@ -1,0 +1,17 @@
+.idea
+**/.venv
+**.iml
+**/.env
+**/models
+**/__pycache__
+**/artifacts
+**/.artifacts
+**/database.db
+**/evaluation-keys
+**/.DS_Store
+**/node_modules
+**/dist
+**/data/cloud
+**/.hyfhenet-cache
+**/*.py[cod]
+!hyfhenet-edge/models

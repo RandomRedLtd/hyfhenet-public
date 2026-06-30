@@ -1,0 +1,120 @@
+services:
+  gateway:
+    build:
+      context: .
+      args:
+        INSTALL_FHE_DEPS: ${HYFHENET_INSTALL_FHE_DEPS:-false}
+    image: ${HYFHENET_IMAGE:-hyfhenet-edge:latest}
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      HYFHENET_ZIGBEE_HOST: ${HYFHENET_ZIGBEE_HOST:-host.docker.internal}
+      HYFHENET_ZIGBEE_PORT: ${HYFHENET_ZIGBEE_PORT:-1883}
+      HYFHENET_ZIGBEE_TOPIC: ${HYFHENET_ZIGBEE_TOPIC:-zigbee2mqtt/#}
+      HYFHENET_ZIGBEE_TOPIC_PREFIX: ${HYFHENET_ZIGBEE_TOPIC_PREFIX:-zigbee2mqtt/}
+      HYFHENET_ZIGBEE_CLIENT_ID: ${HYFHENET_ZIGBEE_CLIENT_ID:-hyfhenet-edge-gateway}
+      HYFHENET_ZIGBEE_USERNAME: ${HYFHENET_ZIGBEE_USERNAME:-}
+      HYFHENET_ZIGBEE_PASSWORD: ${HYFHENET_ZIGBEE_PASSWORD:-}
+      HYFHENET_ZIGBEE_TLS: ${HYFHENET_ZIGBEE_TLS:-false}
+      HYFHENET_ZIGBEE_CA_CERT: ${HYFHENET_ZIGBEE_CA_CERT:-}
+      HYFHENET_ZIGBEE_CLIENT_CERT: ${HYFHENET_ZIGBEE_CLIENT_CERT:-}
+      HYFHENET_ZIGBEE_CLIENT_KEY: ${HYFHENET_ZIGBEE_CLIENT_KEY:-}
+      HYFHENET_ZIGBEE_TLS_INSECURE: ${HYFHENET_ZIGBEE_TLS_INSECURE:-false}
+      HYFHENET_FHE_API_URL: ${HYFHENET_FHE_API_URL:-}
+      HYFHENET_FHE_API_KEY: ${HYFHENET_FHE_API_KEY:-}
+      HYFHENET_FHE_CACHE_DIR: /app/.cache/hyfhenet
+      HYFHENET_FHE_CLIENT_CERT: ${HYFHENET_FHE_CLIENT_CERT:-}
+      HYFHENET_FHE_CLIENT_KEY: ${HYFHENET_FHE_CLIENT_KEY:-}
+      HYFHENET_FHE_CA_BUNDLE: ${HYFHENET_FHE_CA_BUNDLE:-}
+      HYFHENET_FHE_ALLOW_INSECURE_HTTP: ${HYFHENET_FHE_ALLOW_INSECURE_HTTP:-false}
+      HYFHENET_CONTAINERIZED: "1"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./.hyfhenet-cache:/app/.cache/hyfhenet
+    command:
+      - mqtt-live
+      - --output
+      - artifacts/gateway_mqtt_live
+      - --continuous
+      - --log-level
+      - progress
+
+  capture:
+    profiles: ["capture"]
+    build:
+      context: .
+      args:
+        INSTALL_FHE_DEPS: ${HYFHENET_INSTALL_FHE_DEPS:-false}
+    image: ${HYFHENET_IMAGE:-hyfhenet-edge:latest}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      HYFHENET_ZIGBEE_HOST: ${HYFHENET_ZIGBEE_HOST:-host.docker.internal}
+      HYFHENET_ZIGBEE_PORT: ${HYFHENET_ZIGBEE_PORT:-1883}
+      HYFHENET_ZIGBEE_TOPIC: ${HYFHENET_ZIGBEE_TOPIC:-zigbee2mqtt/#}
+      HYFHENET_ZIGBEE_TOPIC_PREFIX: ${HYFHENET_ZIGBEE_TOPIC_PREFIX:-zigbee2mqtt/}
+      HYFHENET_ZIGBEE_LISTEN_SECONDS: ${HYFHENET_ZIGBEE_LISTEN_SECONDS:-600}
+      HYFHENET_ZIGBEE_CLIENT_ID: ${HYFHENET_CAPTURE_CLIENT_ID:-hyfhenet-edge-capture}
+      HYFHENET_ZIGBEE_USERNAME: ${HYFHENET_ZIGBEE_USERNAME:-}
+      HYFHENET_ZIGBEE_PASSWORD: ${HYFHENET_ZIGBEE_PASSWORD:-}
+      HYFHENET_ZIGBEE_TLS: ${HYFHENET_ZIGBEE_TLS:-false}
+      HYFHENET_ZIGBEE_CA_CERT: ${HYFHENET_ZIGBEE_CA_CERT:-}
+      HYFHENET_ZIGBEE_CLIENT_CERT: ${HYFHENET_ZIGBEE_CLIENT_CERT:-}
+      HYFHENET_ZIGBEE_CLIENT_KEY: ${HYFHENET_ZIGBEE_CLIENT_KEY:-}
+      HYFHENET_ZIGBEE_TLS_INSECURE: ${HYFHENET_ZIGBEE_TLS_INSECURE:-false}
+      HYFHENET_FHE_API_URL: ${HYFHENET_FHE_API_URL:-}
+      HYFHENET_FHE_API_KEY: ${HYFHENET_FHE_API_KEY:-}
+      HYFHENET_FHE_CACHE_DIR: /app/.cache/hyfhenet
+      HYFHENET_FHE_CLIENT_CERT: ${HYFHENET_FHE_CLIENT_CERT:-}
+      HYFHENET_FHE_CLIENT_KEY: ${HYFHENET_FHE_CLIENT_KEY:-}
+      HYFHENET_FHE_CA_BUNDLE: ${HYFHENET_FHE_CA_BUNDLE:-}
+      HYFHENET_FHE_ALLOW_INSECURE_HTTP: ${HYFHENET_FHE_ALLOW_INSECURE_HTTP:-false}
+      HYFHENET_CONTAINERIZED: "1"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./.hyfhenet-cache:/app/.cache/hyfhenet
+    command:
+      - mqtt-capture
+      - --capture-output
+      - ${HYFHENET_CAPTURE_OUTPUT:-artifacts/zigbee_mqtt_capture.csv}
+      - --output
+      - ${HYFHENET_CAPTURE_RUN_OUTPUT:-artifacts/gateway_mqtt_capture}
+      - --run-pipeline
+      - --log-level
+      - progress
+
+  report:
+    profiles: ["report"]
+    build:
+      context: .
+      args:
+        INSTALL_FHE_DEPS: ${HYFHENET_INSTALL_FHE_DEPS:-false}
+    image: ${HYFHENET_IMAGE:-hyfhenet-edge:latest}
+    environment:
+      HYFHENET_FHE_API_URL: ${HYFHENET_FHE_API_URL:-}
+      HYFHENET_FHE_API_KEY: ${HYFHENET_FHE_API_KEY:-}
+      HYFHENET_FHE_CACHE_DIR: /app/.cache/hyfhenet
+      HYFHENET_FHE_CLIENT_CERT: ${HYFHENET_FHE_CLIENT_CERT:-}
+      HYFHENET_FHE_CLIENT_KEY: ${HYFHENET_FHE_CLIENT_KEY:-}
+      HYFHENET_FHE_CA_BUNDLE: ${HYFHENET_FHE_CA_BUNDLE:-}
+      HYFHENET_FHE_ALLOW_INSECURE_HTTP: ${HYFHENET_FHE_ALLOW_INSECURE_HTTP:-false}
+      HYFHENET_REPORT_VIDEOS: ${HYFHENET_REPORT_VIDEOS:-true}
+      HYFHENET_REPORT_SKIP_TRAINING: ${HYFHENET_REPORT_SKIP_TRAINING:-false}
+      HYFHENET_REPORT_EDGE_MODEL_PATH: ${HYFHENET_REPORT_EDGE_MODEL_PATH:-}
+      HYFHENET_CONTAINERIZED: "1"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./.hyfhenet-cache:/app/.cache/hyfhenet
+    command:
+      - prepare-edge-report
+      - --source
+      - ${HYFHENET_REPORT_SOURCE:-input}
+      - --input
+      - ${HYFHENET_REPORT_INPUT:-artifacts/zigbee_mqtt_capture.csv}
+      - --config
+      - ${HYFHENET_REPORT_CONFIG:-configs/pilot_1_2_edge.json}
+      - --output
+      - ${HYFHENET_REPORT_OUTPUT:-artifacts/edge_report}
+      - --interval-seconds
+      - ${HYFHENET_REPORT_INTERVAL_SECONDS:-5}
