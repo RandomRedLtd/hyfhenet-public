@@ -46,3 +46,8 @@ Example with overwrite flag:
 This will delete that model's files and train a new model.
 
 **NOTE:** If you haven't changed that models dataset and you retrain the model, it will result in the same model.
+
+## Third-Party Components
+This project includes components from the following third-party libraries:
+**ConcreteML**: Licensed under the BSD-3-Clause-Clear license.
+See [ConcreteML readme](https://github.com/zama-ai/concrete-ml?tab=License-1-ov-file#readme) for details.

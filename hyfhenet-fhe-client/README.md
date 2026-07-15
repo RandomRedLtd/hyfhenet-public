@@ -43,3 +43,8 @@ This component is designed to be a backend client library for the [HyFHE-net edg
 ### 2.1. cohort(inference_input)
 ### 2.2. forecast(inference_input)
 ### 2.3. nilm(inference_input)
+
+## Third-Party Components
+This project includes components from the following third-party libraries:
+**ConcreteML**: Licensed under the BSD-3-Clause-Clear license.
+See [ConcreteML readme](https://github.com/zama-ai/concrete-ml?tab=License-1-ov-file#readme) for details.
