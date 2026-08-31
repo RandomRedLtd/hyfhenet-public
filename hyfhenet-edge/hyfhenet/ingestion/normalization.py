@@ -62,6 +62,8 @@ FALLBACK_FIELD_MAP: dict[str, tuple[str, str | None]] = {
     "linkquality": ("signal_link_quality", "lqi"),
     "household_power_w": ("household_power_w", "W"),
     "meter_power_w": ("household_power_w", "W"),
+    "active_power": ("household_power_w", "W"),
+    "active_power_w": ("household_power_w", "W"),
     "PAPP": ("household_power_w", "VA"),
     "SINSTS": ("household_power_w", "VA"),
     "household_energy_wh": ("household_energy_wh", "Wh"),
@@ -101,6 +103,8 @@ def ensure_raw_event(raw_row: RawTelemetryEvent | dict[str, str]) -> RawTelemetr
         metadata.setdefault("raw_payload", raw_row["raw_payload"])
     if "mqtt_topic" in raw_row:
         metadata.setdefault("mqtt_topic", raw_row["mqtt_topic"])
+    if "edf_stream" in raw_row:
+        metadata.setdefault("edf_stream", raw_row["edf_stream"])
     return RawTelemetryEvent(
         timestamp=datetime.strptime(raw_row["timestamp"], TIMESTAMP_FORMAT),
         device=raw_row["device"],
@@ -162,17 +166,13 @@ def apply_normalized_event_to_state(
     state: dict[str, Any],
     last_update: dict[str, datetime],
 ) -> None:
-    if event.device_role == "smart_plug":
-        plug_state = state.setdefault("_smart_plugs", {})
-        plug_last_update = last_update.setdefault("_smart_plugs", {})
-        device_values = plug_state.setdefault(event.device_id, {})
-        device_last_update = plug_last_update.setdefault(event.device_id, {})
-        device_values[event.field] = event.value
-        device_last_update[event.field] = event.timestamp
-        _refresh_smart_plug_aggregates(state, last_update)
-        return
-
-    if event.device_role == "household_meter":
+    if event.field in {
+        "household_power_w",
+        "household_energy_wh",
+        "household_voltage_v",
+        "household_current_a",
+        "household_link_quality",
+    }:
         state[event.field] = event.value
         last_update[event.field] = event.timestamp
         if event.field == "household_power_w":
@@ -183,13 +183,27 @@ def apply_normalized_event_to_state(
             state["_household_meter_energy_observed"] = True
         return
 
-    if event.field in {
-        "household_power_w",
-        "household_energy_wh",
-        "household_voltage_v",
-        "household_current_a",
-        "household_link_quality",
+    if event.device_role == "smart_plug" and event.field in {
+        "plug_state",
+        "plug_power_w",
+        "plug_voltage_v",
+        "plug_current_a",
+        "plug_energy_wh",
+        "plug_energy_today_wh",
+        "plug_energy_yesterday_wh",
+        "plug_energy_month_wh",
+        "plug_link_quality",
     }:
+        plug_state = state.setdefault("_smart_plugs", {})
+        plug_last_update = last_update.setdefault("_smart_plugs", {})
+        device_values = plug_state.setdefault(event.device_id, {})
+        device_last_update = plug_last_update.setdefault(event.device_id, {})
+        device_values[event.field] = event.value
+        device_last_update[event.field] = event.timestamp
+        _refresh_smart_plug_aggregates(state, last_update)
+        return
+
+    if event.device_role == "household_meter":
         state[event.field] = event.value
         last_update[event.field] = event.timestamp
         if event.field == "household_power_w":

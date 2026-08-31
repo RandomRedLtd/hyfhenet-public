@@ -233,8 +233,10 @@ class LatencySample:
     fhe_cloud_stage_ms: float | None
     service_stage_ms: float | None
     model_stage_ms: float | None
-    total_tick_ms: float | None
-    event_to_model_ms: float | None
+    edge_local_operations_ms: float | None = None
+    cloud_fhe_operations_ms: float | None = None
+    total_tick_ms: float | None = None
+    event_to_model_ms: float | None = None
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -262,6 +264,8 @@ class LatencySample:
             "fhe_cloud_stage_ms": self.fhe_cloud_stage_ms,
             "service_stage_ms": self.service_stage_ms,
             "model_stage_ms": self.model_stage_ms,
+            "edge_local_operations_ms": self.edge_local_operations_ms,
+            "cloud_fhe_operations_ms": self.cloud_fhe_operations_ms,
             "total_tick_ms": self.total_tick_ms,
             "event_to_model_ms": self.event_to_model_ms,
         }
@@ -406,6 +410,13 @@ class StreamingPipelineRuntime:
                 max(monotonic_now - self.latest_group_completed_at, 0.0) * 1000.0,
                 3,
                 )
+        fhe_cloud_stage_ms = None
+        if self.current_tick_fhe_cloud_sampled:
+            fhe_cloud_stage_ms = (
+                    self.current_tick_stage_durations_ms.get("cloud_fhe_operations")
+                    or self.current_tick_stage_durations_ms.get("fhe_cloud_inference")
+            )
+        edge_local_operations_ms = self._edge_local_operations_ms(fhe_cloud_stage_ms)
         sample = LatencySample(
             tick_timestamp=tick_timestamp,
             latest_event_timestamp=self.last_event_timestamp,
@@ -424,14 +435,51 @@ class StreamingPipelineRuntime:
             event_gate_stage_ms=self.current_tick_stage_durations_ms.get("event_gating"),
             forecast_prep_stage_ms=self.current_tick_stage_durations_ms.get("cloud_forecast_prep"),
             fhe_cloud_sampled=1 if self.current_tick_fhe_cloud_sampled else 0,
-            fhe_cloud_stage_ms=self.current_tick_stage_durations_ms.get("fhe_cloud_inference"),
+            fhe_cloud_stage_ms=fhe_cloud_stage_ms,
             service_stage_ms=self.current_tick_stage_durations_ms.get("service_inference"),
             model_stage_ms=self.current_tick_stage_durations_ms.get("ai_modeling"),
+            edge_local_operations_ms=edge_local_operations_ms,
+            cloud_fhe_operations_ms=fhe_cloud_stage_ms,
             total_tick_ms=total_tick_ms,
             event_to_model_ms=event_to_model_ms,
         )
         self.latency_samples.append(sample)
         return sample
+
+    def _edge_local_operations_ms(self, fhe_cloud_stage_ms: float | None) -> float | None:
+        local_stage_names = (
+            "preprocessing",
+            "feature_engineering",
+            "event_gating",
+            "cloud_forecast_prep",
+            "service_inference",
+            "ai_modeling",
+        )
+        values = [
+            float(value)
+            for stage_name in local_stage_names
+            if (value := self.current_tick_stage_durations_ms.get(stage_name)) is not None
+        ]
+        if self.current_tick_fhe_cloud_sampled:
+            full_fhe_stage_ms = self.current_tick_stage_durations_ms.get(
+                "fhe_cloud_inference"
+            )
+            if full_fhe_stage_ms is not None:
+                fhe_edge_overhead_ms = max(
+                    float(full_fhe_stage_ms) - float(fhe_cloud_stage_ms or 0.0),
+                    0.0,
+                    )
+                if fhe_edge_overhead_ms > 0:
+                    values.append(fhe_edge_overhead_ms)
+        elif (
+                skipped_fhe_stage_ms := self.current_tick_stage_durations_ms.get(
+                    "fhe_cloud_inference"
+                )
+        ) is not None:
+            values.append(float(skipped_fhe_stage_ms))
+        if not values:
+            return None
+        return round(sum(values), 3)
 
     def record_model_result(self, result: ModelInferenceResult) -> None:
         self.model_results.append(result)

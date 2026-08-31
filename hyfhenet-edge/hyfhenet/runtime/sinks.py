@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import time
+from datetime import datetime
 from typing import Any
 
 from ..fhe.features import (
@@ -25,6 +26,7 @@ from ..core.models import (
     GatewayStreamRunSummary,
     LoadEventMarker,
     ModelInferenceResult,
+    LatencySample,
 )
 
 
@@ -49,6 +51,9 @@ class AppendFileStreamingSink(StreamingSink):
         self._cohort_features_writer = None
         self._forecast_training_handle = None
         self._forecast_training_writer = None
+        self._latency_handle = None
+        self._latency_writer = None
+        self._latency_cycle = 0
         self._dirty_record_count = 0
         self._last_flush_at = 0.0
 
@@ -65,6 +70,7 @@ class AppendFileStreamingSink(StreamingSink):
         )
         self._dirty_record_count = 0
         self._last_flush_at = self.monotonic_fn()
+        self._latency_cycle = 0
 
         self._edge_results_handle = (context.output_dir / "edge_results.jsonl").open(
             "w", encoding="utf-8", newline=""
@@ -104,6 +110,14 @@ class AppendFileStreamingSink(StreamingSink):
             fieldnames=FORECAST_TRAINING_COLUMNS,
         )
         self._forecast_training_writer.writeheader()
+        self._latency_handle = (context.output_dir / "latency.csv").open(
+            "w", encoding="utf-8", newline=""
+        )
+        self._latency_writer = csv.DictWriter(
+            self._latency_handle,
+            fieldnames=["cycle", *_latency_fieldnames()],
+        )
+        self._latency_writer.writeheader()
         self._flush_open_handles()
 
     def append_quality_alert(self, alert: dict[str, Any], context: PipelineContext) -> None:
@@ -169,6 +183,19 @@ class AppendFileStreamingSink(StreamingSink):
         self._forecast_training_writer.writerow(training_example.to_record())
         self._mark_write()
 
+    def append_latency_sample(
+        self,
+        latency_sample: LatencySample,
+        context: PipelineContext,
+    ) -> None:
+        if self._latency_writer is None:
+            return
+        self._latency_cycle += 1
+        self._latency_writer.writerow(
+            {"cycle": self._latency_cycle, **latency_sample.to_record()}
+        )
+        self._mark_write()
+
     def close(
         self,
         summary: GatewayStreamRunSummary,
@@ -217,6 +244,7 @@ class AppendFileStreamingSink(StreamingSink):
             self._nilm_features_handle,
             self._cohort_features_handle,
             self._forecast_training_handle,
+            self._latency_handle,
         ):
             if handle is not None:
                 handle.close()
@@ -256,6 +284,7 @@ class AppendFileStreamingSink(StreamingSink):
             self._nilm_features_handle,
             self._cohort_features_handle,
             self._forecast_training_handle,
+            self._latency_handle,
         ):
             if handle is not None:
                 handle.flush()
@@ -265,3 +294,30 @@ class AppendFileStreamingSink(StreamingSink):
 
 class NullStreamingSink(StreamingSink):
     pass
+
+
+def _latency_fieldnames() -> list[str]:
+    return list(
+        LatencySample(
+            tick_timestamp=datetime.now(),
+            latest_event_timestamp=None,
+            raw_event_count=0,
+            normalized_event_count=0,
+            snapshot_count=0,
+            cloud_forecast_feature_count=0,
+            cloud_forecast_training_example_count=0,
+            load_event_marker_count=0,
+            edge_forecast_evaluation_count=0,
+            service_result_count=0,
+            model_result_count=0,
+            group_processing_ms=None,
+            snapshot_stage_ms=None,
+            feature_stage_ms=None,
+            event_gate_stage_ms=None,
+            forecast_prep_stage_ms=None,
+            fhe_cloud_sampled=0,
+            fhe_cloud_stage_ms=None,
+            service_stage_ms=None,
+            model_stage_ms=None,
+        ).to_record()
+    )

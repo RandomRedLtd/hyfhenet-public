@@ -4,6 +4,7 @@ import contextlib
 import csv
 import io
 import json
+import threading
 import tempfile
 import time
 import unittest
@@ -18,11 +19,13 @@ from hyfhenet.ai.models import (
     EnergyAnomalyMonitorModel,
     build_model_input,
 )
+from hyfhenet.core.config import load_pipeline_config
 from hyfhenet.core.interfaces import PipelineContext, StreamingPipelineStage
 from hyfhenet.core.models import (
     CloudForecastFeatureRecord,
     FeatureWindow,
     GatewayStreamRunSummary,
+    ModelInferenceResult,
     RawTelemetryEvent,
     StreamingPipelineRuntime,
 )
@@ -39,9 +42,11 @@ from hyfhenet.fhe.features import (
 )
 from hyfhenet.ingestion.stream_sources import (
     CaptureRawEventSource,
+    EdfServiceSdkEventSource,
     ZigbeeMqttSensorSource,
     TimestampPacedStreamSource,
     ZigbeeCsvReplaySource,
+    decode_edf_sdk_event,
     decode_mqtt_message,
     permit_join,
     set_plug_state,
@@ -63,6 +68,7 @@ from hyfhenet.runtime.stream import (
     run_gateway_stream_replay,
 )
 from hyfhenet.runtime.sinks import AppendFileStreamingSink, NullStreamingSink
+from scripts.prepare_edge_report import run_summary_benchmark
 from hyfhenet.training import edge_forecast as edge_forecast_training
 from hyfhenet.training.edge_forecast import train_edge_short_term_load_forecast
 
@@ -152,6 +158,27 @@ class FakePublisherClient:
         return None
 
 
+class FakeEdfDeviceApi:
+    def __init__(self, events):
+        self.events = events
+        self.requested_streams = None
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self):
+        self.entered = True
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        self.exited = True
+        return None
+
+    async def event(self, streams=None):
+        self.requested_streams = streams
+        for event in self.events:
+            yield event
+
+
 class FakeSuccessReasonCode:
     value = 0
     name = "Success"
@@ -206,6 +233,43 @@ class CountingFheRunner:
     def infer_cloud_features(self, forecast_feature, nilm_feature, cohort_feature, context):
         self.calls.append(forecast_feature.timestamp)
         return []
+
+
+class BlockingFheRunner:
+    def __init__(self):
+        self.calls = []
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def task_ids(self):
+        return ["fhe_long_term_load_forecast"]
+
+    def infer_cloud_features(self, forecast_feature, nilm_feature, cohort_feature, context):
+        self.calls.append(forecast_feature.timestamp)
+        self.started.set()
+        self.release.wait(timeout=2.0)
+        return [
+            ModelInferenceResult(
+                timestamp=forecast_feature.timestamp,
+                model_id="fhe_long_term_load_forecast",
+                model_version="1.0",
+                backend="concrete_ml_remote_fhe",
+                input_contract_version="1.0",
+                output_contract_version="1.0",
+                inference_status="ok",
+                prediction_label="fhe_long_term_load_forecast",
+                prediction_score=42.0,
+                anomaly_score=None,
+                load_score=42.0,
+                details=json.dumps(
+                    {
+                        "timing_ms": {
+                            "cloud_fhe_inference_wait_ms": 123.0,
+                        }
+                    }
+                ),
+            )
+        ]
 
 
 class StreamingPipelineTests(unittest.TestCase):
@@ -287,6 +351,7 @@ class StreamingPipelineTests(unittest.TestCase):
             self.assertFalse((output_dir / "latency_samples.csv").exists())
             self.assertFalse((output_dir / "latency_summary.json").exists())
             self.assertFalse((output_dir / "edge_forecast_evaluation.csv").exists())
+            self.assertTrue((output_dir / "latency.csv").exists())
             self.assertTrue((output_dir / "performance_metrics.json").exists())
             self.assertTrue(all(row["detector_id"] == "load_event_gate" for row in markers))
             self.assertTrue(any(row["event_type"] in {"initial_state", "ramp_up", "ramp_down", "switch_on", "switch_off"} for row in markers))
@@ -339,6 +404,8 @@ class StreamingPipelineTests(unittest.TestCase):
             self.assertEqual(latency_summary["sample_count"], summary["snapshot_count"])
             self.assertIn("avg_event_gate_stage_ms", latency_summary)
             self.assertIn("avg_forecast_prep_stage_ms", latency_summary)
+            self.assertIn("avg_edge_local_operations_ms", latency_summary)
+            self.assertIn("avg_cloud_fhe_operations_ms", latency_summary)
             self.assertIn("avg_fhe_cloud_stage_ms", latency_summary)
             self.assertIn("p99_total_tick_ms", latency_summary)
             self.assertIn("raw_events_per_wall_second", run_summary["performance_summary"])
@@ -401,10 +468,12 @@ class StreamingPipelineTests(unittest.TestCase):
                 NullStreamingSink(),
                 NullStreamingObserver(),
             )
-            runtime.record_tick_stage_duration(
-                "fhe_cloud_inference",
-                1000.0 + offset_seconds if runtime.current_tick_fhe_cloud_sampled else 0.1,
-            )
+            if runtime.current_tick_fhe_cloud_sampled:
+                runtime.record_tick_stage_duration(
+                    "cloud_fhe_operations",
+                    1000.0 + offset_seconds,
+                    )
+            runtime.record_tick_stage_duration("fhe_cloud_inference", 0.1)
             sample = runtime.finish_tick(timestamp, float(offset_seconds) + 0.001)
             self.assertIsNotNone(sample)
             samples.append(sample)
@@ -422,6 +491,101 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertEqual(latency_summary["sample_count"], 25)
         self.assertEqual(latency_summary["fhe_cloud_sample_count"], 3)
         self.assertEqual(latency_summary["avg_fhe_cloud_stage_ms"], 1060.0)
+        self.assertEqual(latency_summary["avg_cloud_fhe_operations_ms"], 1060.0)
+        self.assertIn("avg_edge_local_operations_ms", latency_summary)
+
+    def test_fhe_stage_async_dispatch_does_not_block_tick_loop(self) -> None:
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        config.setdefault("fhe_cloud", {})["async_enabled"] = True
+        config.setdefault("fhe_cloud", {})["sample_interval_seconds"] = 60
+        config.setdefault("fhe_cloud", {})["max_pending_requests"] = 1
+        base = datetime(2026, 4, 29, 13, 0, 0)
+        context = PipelineContext(input_path=INPUT_PATH, output_dir=ROOT / "artifacts", config=config)
+        runtime = StreamingPipelineRuntime(
+            tick_interval_seconds=5,
+            tick_clock_scale=0.0,
+            idle_poll_seconds=0.1,
+            group_flush_seconds=0.2,
+        )
+        runner = BlockingFheRunner()
+        stage = StreamingFheCloudInferenceStage(runner)
+
+        runtime.start_tick(0.0)
+        runtime.latest_feature_window = FeatureWindow(
+            timestamp=base,
+            schema_version="1.0",
+            values={"household_power_w": 42.0},
+        )
+        runtime.latest_cloud_forecast_feature = CloudForecastFeatureRecord(
+            timestamp=base,
+            schema_version="1.0",
+            feature_set_id="long_term_load_forecast_v1",
+            values={},
+        )
+        stage.on_tick(base, runtime, context, NullStreamingSink(), NullStreamingObserver())
+
+        self.assertTrue(runner.started.wait(timeout=1.0))
+        self.assertEqual(runner.calls, [base])
+        self.assertEqual(runtime.model_input_count, 1)
+        self.assertFalse(runtime.current_tick_fhe_cloud_sampled)
+
+        queued_while_pending = base + timedelta(seconds=60)
+        runtime.start_tick(0.001)
+        runtime.latest_feature_window = FeatureWindow(
+            timestamp=queued_while_pending,
+            schema_version="1.0",
+            values={"household_power_w": 43.0},
+        )
+        runtime.latest_cloud_forecast_feature = CloudForecastFeatureRecord(
+            timestamp=queued_while_pending,
+            schema_version="1.0",
+            feature_set_id="long_term_load_forecast_v1",
+            values={},
+        )
+        stage.on_tick(
+            queued_while_pending,
+            runtime,
+            context,
+            NullStreamingSink(),
+            NullStreamingObserver(),
+        )
+
+        self.assertEqual(runtime.model_input_count, 1)
+        self.assertEqual(runner.calls, [base])
+
+        runner.release.set()
+        completed = False
+        for index in range(20):
+            drain_timestamp = base + timedelta(seconds=65 + index)
+            runtime.start_tick(float(index))
+            runtime.latest_feature_window = FeatureWindow(
+                timestamp=drain_timestamp,
+                schema_version="1.0",
+                values={"household_power_w": 44.0},
+            )
+            runtime.latest_cloud_forecast_feature = CloudForecastFeatureRecord(
+                timestamp=drain_timestamp,
+                schema_version="1.0",
+                feature_set_id="long_term_load_forecast_v1",
+                values={},
+            )
+            stage.on_tick(
+                drain_timestamp,
+                runtime,
+                context,
+                NullStreamingSink(),
+                NullStreamingObserver(),
+            )
+            if runtime.model_result_count == 1:
+                completed = True
+                break
+            time.sleep(0.01)
+
+        stage.on_complete(runtime, context, NullStreamingSink(), NullStreamingObserver())
+        self.assertTrue(completed)
+        self.assertTrue(runtime.current_tick_fhe_cloud_sampled)
+        self.assertEqual(runtime.current_tick_stage_durations_ms["cloud_fhe_operations"], 123.0)
+        self.assertEqual(runtime.model_result_count, 1)
 
     def test_stream_replay_uses_derived_household_power(self) -> None:
         context = build_gateway_stream_context(
@@ -546,6 +710,32 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertFalse(args.run_pipeline)
         self.assertFalse(args.append)
 
+    def test_edf_sdk_live_parser_defaults_to_finite_window(self) -> None:
+        args = build_parser().parse_args(["edf-sdk-live"])
+
+        self.assertEqual(args.output, Path("artifacts/gateway_edf_sdk_live"))
+        self.assertFalse(args.continuous)
+        self.assertIsNone(args.edf_streams)
+
+    def test_edf_sdk_live_parser_accepts_stream_mapping(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "edf-sdk-live",
+                "--edf-streams",
+                "TEMPERATURE,POWER",
+                "--edf-stream-field-map",
+                "POWER=household_power_w",
+                "--edf-default-device-role",
+                "household_meter",
+                "--continuous",
+            ]
+        )
+
+        self.assertEqual(args.edf_streams, "TEMPERATURE,POWER")
+        self.assertEqual(args.edf_stream_field_map, "POWER=household_power_w")
+        self.assertEqual(args.edf_default_device_role, "household_meter")
+        self.assertTrue(args.continuous)
+
     def test_fhe_cloud_forecast_cli_args_configure_default_stage(self) -> None:
         args = build_parser().parse_args(
             [
@@ -574,6 +764,90 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertEqual(args.fhe_ca_bundle, Path("certs/fhe-ca.pem"))
         self.assertTrue(args.fhe_allow_insecure_http)
 
+    def test_fhe_cloud_cli_args_support_sampling_async_and_task_subset(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "mqtt-live",
+                "--fhe-sample-interval-seconds",
+                "60",
+                "--fhe-tasks",
+                "forecast,nilm",
+                "--fhe-async",
+                "--fhe-max-pending-requests",
+                "2",
+            ]
+        )
+
+        self.assertEqual(args.fhe_sample_interval_seconds, 60)
+        self.assertEqual(args.fhe_tasks, "forecast,nilm")
+        self.assertTrue(args.fhe_async_enabled)
+        self.assertEqual(args.fhe_max_pending_requests, 2)
+
+    def test_fhe_env_overrides_support_sampling_async_and_task_subset(self) -> None:
+        with mock.patch.dict(
+                "os.environ",
+                {
+                    "HYFHENET_FHE_SAMPLE_INTERVAL_SECONDS": "60",
+                    "HYFHENET_FHE_ASYNC": "true",
+                    "HYFHENET_FHE_MAX_PENDING_REQUESTS": "2",
+                    "HYFHENET_FHE_TASKS": "forecast,nilm",
+                },
+        ):
+            config = load_pipeline_config(CONFIG_PATH)
+
+        fhe_cloud = config["fhe_cloud"]
+        self.assertEqual(fhe_cloud["sample_interval_seconds"], 60)
+        self.assertTrue(fhe_cloud["async_enabled"])
+        self.assertEqual(fhe_cloud["max_pending_requests"], 2)
+        self.assertTrue(fhe_cloud["tasks"]["forecast"]["enabled"])
+        self.assertTrue(fhe_cloud["tasks"]["nilm"]["enabled"])
+        self.assertFalse(fhe_cloud["tasks"]["cohort"]["enabled"])
+
+    def test_edf_sdk_env_overrides_configure_streams_and_mapping(self) -> None:
+        with mock.patch.dict(
+                "os.environ",
+                {
+                    "HYFHENET_EDF_SDK_STREAMS": "TEMPERATURE,POWER",
+                    "HYFHENET_EDF_SDK_LISTEN_SECONDS": "120",
+                    "HYFHENET_EDF_SDK_DEFAULT_DEVICE_ROLE": "household_meter",
+                    "HYFHENET_EDF_SDK_STREAM_FIELD_MAP": "POWER=household_power_w",
+                },
+        ):
+            config = load_pipeline_config(CONFIG_PATH)
+
+        edf_config = config["edf_service_sdk"]
+        self.assertEqual(edf_config["streams"], ["TEMPERATURE", "POWER"])
+        self.assertEqual(edf_config["listen_seconds"], 120)
+        self.assertEqual(edf_config["default_device_role"], "household_meter")
+        self.assertEqual(edf_config["stream_field_map"], {"POWER": "household_power_w"})
+
+    def test_fhe_env_aliases_configure_api_url_and_key(self) -> None:
+        with mock.patch.dict(
+                "os.environ",
+                {
+                    "FHE_URL": "https://hyfhe.net",
+                    "FHE_API": "token",
+                    "HYFHENET_FHE_API_URL": "",
+                    "HYFHENET_FHE_API_KEY": "",
+                    "API_URL": "",
+                    "API_KEY": "",
+                },
+                clear=False,
+        ):
+            config = load_pipeline_config(CONFIG_PATH)
+            client = HyfhenetFheClient(
+                FheClientConfig(
+                    api_url=None,
+                    api_key=None,
+                    cache_dir=ROOT / "artifacts" / "alias_fhe_cache",
+                )
+            )
+
+        self.assertEqual(config["fhe_cloud"]["api_url"], "https://hyfhe.net")
+        self.assertEqual(config["fhe_cloud"]["api_key"], "token")
+        self.assertEqual(client.api_url, "https://hyfhe.net")
+        self.assertEqual(client.api_key, "token")
+
     def test_benchmark_pipeline_parser_defaults_to_device_evidence_run(self) -> None:
         args = build_parser().parse_args(["benchmark-pipeline"])
 
@@ -583,11 +857,26 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertEqual(args.interval_seconds, 30)
 
     def test_prepare_edge_report_parser_defaults_to_video_report(self) -> None:
-        args = build_parser().parse_args(["prepare-edge-report"])
+        with mock.patch.dict(
+                "os.environ",
+                {
+                    "HYFHENET_REPORT_OUTPUT": "",
+                    "HYFHENET_REPORT_SOURCE": "",
+                    "HYFHENET_REPORT_INTERVAL_SECONDS": "",
+                    "HYFHENET_REPORT_BENCHMARK_RUNS": "",
+                    "HYFHENET_REPORT_FHE_SAMPLE_INTERVAL_SECONDS": "",
+                    "HYFHENET_REPORT_SKIP_TRAINING": "",
+                    "HYFHENET_REPORT_EDGE_MODEL_PATH": "",
+                    "HYFHENET_REPORT_VIDEOS": "",
+                    "HYFHENET_FFMPEG_BIN": "",
+                },
+        ):
+            args = build_parser().parse_args(["prepare-edge-report"])
 
         self.assertEqual(args.output, Path("artifacts/edge_report"))
         self.assertEqual(args.source, "input")
         self.assertEqual(args.interval_seconds, 5)
+        self.assertEqual(args.benchmark_runs, 4)
         self.assertIsNone(args.fhe_sample_interval_seconds)
         self.assertIsNone(args.reuse_fhe_report)
         self.assertFalse(args.skip_training)
@@ -616,11 +905,36 @@ class StreamingPipelineTests(unittest.TestCase):
                 "5",
                 "--fhe-sample-interval-seconds",
                 "60",
+                "--fhe-tasks",
+                "forecast",
             ]
         )
 
         self.assertEqual(args.interval_seconds, 5)
         self.assertEqual(args.fhe_sample_interval_seconds, 60)
+        self.assertEqual(args.fhe_tasks, "forecast")
+
+    def test_prepare_edge_report_benchmark_runs_can_be_disabled_by_env(self) -> None:
+        with mock.patch.dict("os.environ", {"HYFHENET_REPORT_BENCHMARK_RUNS": "0"}):
+            args = build_parser().parse_args(["prepare-edge-report"])
+
+        self.assertEqual(args.benchmark_runs, 0)
+
+    def test_report_summary_benchmark_can_be_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary = run_summary_benchmark(
+                capture_path=Path("unused.csv"),
+                config_path=CONFIG_PATH,
+                out=Path(tmpdir),
+                runs=0,
+                interval_seconds=5,
+            )
+
+            self.assertEqual(summary["runs"], [])
+            self.assertEqual(summary["totals"]["runs"], 0)
+            self.assertEqual(summary["totals"]["raw_events"], 0)
+            self.assertTrue((Path(tmpdir) / "summary.csv").exists())
+            self.assertTrue((Path(tmpdir) / "summary.json").exists())
 
     def test_prepare_edge_report_parser_supports_reused_fhe_report(self) -> None:
         args = build_parser().parse_args(
@@ -747,8 +1061,77 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertIn("[step] stage=fhe_cloud_inference", output)
         self.assertIn("[step] stage=service_inference", output)
         self.assertIn("[step] stage=ai_modeling", output)
+        self.assertIn("[timing] ts=", output)
+        self.assertIn("edge_local_ms=", output)
+        self.assertIn("cloud_fhe_ms=", output)
         self.assertIn("id=fhe_long_term_load_forecast", output)
         self.assertIn("[event] ts=", output)
+
+    def test_decode_edf_sdk_event_supports_stream_value_shape(self) -> None:
+        rows = decode_edf_sdk_event(
+            SimpleNamespace(
+                timestamp="2026-03-04T11:38:37",
+                device_id="edf_device_1",
+                stream="TEMPERATURE",
+                payload=21.5,
+            ),
+            received_at=datetime(2026, 3, 4, 11, 38, 40),
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["timestamp"], "2026-03-04 11:38:37")
+        self.assertEqual(rows[0]["device"], "edf_device_1")
+        self.assertEqual(rows[0]["field"], "temperature")
+        self.assertEqual(rows[0]["value"], "21.5")
+        self.assertEqual(rows[0]["edf_stream"], "TEMPERATURE")
+
+    def test_decode_edf_sdk_event_supports_payload_value_shape(self) -> None:
+        rows = decode_edf_sdk_event(
+            SimpleNamespace(
+                date=datetime(2026, 3, 4, 11, 38, 37),
+                device=SimpleNamespace(id="edf_meter"),
+                stream="APPARENT_POWER",
+                payload={"value": 612.4},
+            ),
+            received_at=datetime(2026, 3, 4, 11, 38, 40),
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["field"], "PAPP")
+        self.assertEqual(rows[0]["value"], "612.4")
+
+    def test_decode_edf_sdk_event_supports_meter_indexes_payload(self) -> None:
+        rows = decode_edf_sdk_event(
+            {
+                "date": datetime(2026, 3, 4, 11, 38, 37),
+                "device": {"id": "edf_meter"},
+                "stream": "METER_INDEXES",
+                "payload": {"indexes": [12345]},
+            },
+            received_at=datetime(2026, 3, 4, 11, 38, 40),
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["field"], "BASE")
+        self.assertEqual(rows[0]["value"], "12345")
+
+    def test_decode_edf_sdk_event_supports_nested_payload_shape(self) -> None:
+        rows = decode_edf_sdk_event(
+            {
+                "created_at": "2026-03-04T11:38:37",
+                "device": {"id": "edf_meter"},
+                "payload": {
+                    "POWER": 612.4,
+                    "TEMPERATURE": 20.1,
+                    "IGNORED": 1,
+                },
+            },
+            received_at=datetime(2026, 3, 4, 11, 38, 40),
+            stream_field_map={"POWER": "household_power_w"},
+        )
+
+        self.assertEqual({row["field"] for row in rows}, {"household_power_w", "temperature"})
+        self.assertEqual({row["device"] for row in rows}, {"edf_meter"})
 
     def test_decode_mqtt_message_supports_zigbee2mqtt_payloads(self) -> None:
         rows = decode_mqtt_message(
@@ -814,12 +1197,20 @@ class StreamingPipelineTests(unittest.TestCase):
             now_provider=lambda: datetime(2026, 3, 4, 11, 38, 40),
             sleep_fn=lambda seconds: None,
         )
-        context = build_gateway_stream_context(
-            input_path="zigbee-mqtt://localhost",
-            output_dir=ROOT / "artifacts" / "mqtt_source",
-            config_path=CONFIG_PATH,
-            zigbee_source="zigbee_mqtt",
-        )
+        with mock.patch.dict(
+                "os.environ",
+                {
+                    "HYFHENET_ZIGBEE_HOST": "",
+                    "HYFHENET_ZIGBEE_TOPIC": "",
+                    "HYFHENET_ZIGBEE_TOPIC_PREFIX": "",
+                },
+        ):
+            context = build_gateway_stream_context(
+                input_path="zigbee-mqtt://localhost",
+                output_dir=ROOT / "artifacts" / "mqtt_source",
+                config_path=CONFIG_PATH,
+                zigbee_source="zigbee_mqtt",
+            )
         context.config["zigbee_gateway"]["listen_seconds"] = 0
 
         events = list(source.stream(context))
@@ -873,6 +1264,47 @@ class StreamingPipelineTests(unittest.TestCase):
             ("certs/ca.pem", "certs/client.pem", "certs/client.key"),
         )
 
+    def test_edf_sdk_stream_source_replays_fake_device_events(self) -> None:
+        fake_api = FakeEdfDeviceApi(
+            [
+                SimpleNamespace(
+                    timestamp="2026-03-04T11:38:37",
+                    device_id="edf_plug_1",
+                    stream="TEMPERATURE",
+                    payload=21.5,
+                ),
+                {
+                    "timestamp": "2026-03-04T11:38:38",
+                    "device": {"id": "edf_plug_1"},
+                    "payload": {"POWER": 61.71},
+                },
+            ]
+        )
+        source = EdfServiceSdkEventSource(
+            api_context_factory=lambda: fake_api,
+            now_provider=lambda: datetime(2026, 3, 4, 11, 38, 40),
+        )
+        context = build_gateway_stream_context(
+            input_path="edf-service-sdk://DeviceApi.from_env",
+            output_dir=ROOT / "artifacts" / "edf_sdk_source",
+            config_path=CONFIG_PATH,
+            zigbee_source="edf_service_sdk",
+        )
+
+        events = list(source.stream(context))
+
+        self.assertEqual(
+            fake_api.requested_streams,
+            ["TEMPERATURE", "POWER", "APPARENT_POWER", "METER_INDEXES"],
+        )
+        self.assertTrue(fake_api.entered)
+        self.assertTrue(fake_api.exited)
+        self.assertEqual(len(events), 2)
+        self.assertEqual({event.field for event in events}, {"temperature", "power"})
+        self.assertEqual({event.source for event in events}, {"edf_service_sdk"})
+        self.assertEqual(context.config["devices"]["edf_plug_1"]["role"], "smart_plug")
+        self.assertEqual(events[0].metadata["edf_stream"], "TEMPERATURE")
+
     def test_household_meter_events_take_precedence_over_plug_sum(self) -> None:
         timestamp = datetime(2026, 3, 4, 12, 0, 0)
         devices = {
@@ -921,6 +1353,32 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertEqual(snapshot["household_power_w"], 300.0)
         self.assertEqual(snapshot["household_power_source"], "sum_of_configured_smart_plugs")
 
+    def test_edf_virtual_datalogger_can_mix_temperature_and_meter_fields(self) -> None:
+        timestamp = datetime(2026, 3, 4, 12, 0, 0)
+        devices = {
+            "edf_virtual_datalogger": {
+                "role": "smart_plug",
+                "name": "edf_virtual_datalogger",
+            }
+        }
+        state = {}
+        last_update = {}
+
+        for raw_event in [
+            RawTelemetryEvent(timestamp, "edf_virtual_datalogger", "temperature", "21.5", "edf_service_sdk"),
+            RawTelemetryEvent(timestamp, "edf_virtual_datalogger", "PAPP", "612.4", "edf_service_sdk"),
+            RawTelemetryEvent(timestamp, "edf_virtual_datalogger", "BASE", "12345", "edf_service_sdk"),
+        ]:
+            normalized = normalize_raw_row(raw_event, devices)
+            apply_normalized_event_to_state(normalized, state, last_update)
+
+        snapshot = build_snapshot(timestamp, 30, state, last_update, devices)
+
+        self.assertEqual(snapshot["indoor_temperature_c"], 21.5)
+        self.assertEqual(snapshot["household_power_w"], 612.4)
+        self.assertEqual(snapshot["household_energy_wh"], 12345.0)
+        self.assertEqual(snapshot["household_power_source"], "household_meter")
+
     def test_input_source_alias_maps_to_live_zigbee_source(self) -> None:
         context = build_gateway_stream_context(
             input_path="zigbee-mqtt://localhost",
@@ -931,6 +1389,17 @@ class StreamingPipelineTests(unittest.TestCase):
 
         self.assertEqual(context.config["gateway_stream"]["zigbee_source"], "zigbee_mqtt")
         self.assertIsInstance(build_gateway_event_source(context), ZigbeeMqttSensorSource)
+
+    def test_input_source_alias_maps_to_edf_sdk_source(self) -> None:
+        context = build_gateway_stream_context(
+            input_path="edf-service-sdk://DeviceApi.from_env",
+            output_dir=ROOT / "artifacts" / "edf_input_source_alias",
+            config_path=CONFIG_PATH,
+            input_source="edf_service_sdk",
+        )
+
+        self.assertEqual(context.config["gateway_stream"]["zigbee_source"], "edf_service_sdk")
+        self.assertIsInstance(build_gateway_event_source(context), EdfServiceSdkEventSource)
 
     def test_zigbee_control_helpers_publish_expected_topics(self) -> None:
         publisher = FakePublisherClient()
@@ -1194,10 +1663,57 @@ class StreamingPipelineTests(unittest.TestCase):
         self.assertEqual(result.inference_status, "ok")
         self.assertEqual(result.prediction_label, "fhe_long_term_load_forecast")
         self.assertEqual(result.prediction_score, 123.45)
+        self.assertIn("timing_ms", json.loads(result.details))
         self.assertEqual(fake_client.calls[0][1], "forecast")
         self.assertEqual(set(fake_client.calls[0][0]), set(FORECAST_NUMERIC_FEATURE_COLUMNS))
         self.assertIn("plug_1_power_w", fake_client.calls[0][0])
         self.assertIn("plug_2_power_w", fake_client.calls[0][0])
+
+    def test_fhe_task_caches_static_unavailable_configuration_failure(self) -> None:
+        class MissingConfigClient:
+            def __init__(self):
+                self.calls = 0
+
+            def forecast(self, values, model_name="forecast"):
+                self.calls += 1
+                raise RuntimeError(
+                    "FHE API URL is not configured. Set HYFHENET_FHE_API_URL or API_URL."
+                )
+
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        fake_client = MissingConfigClient()
+        task = FheLongTermLoadForecastTask(
+            config,
+            client_factory=lambda cfg: fake_client,
+        )
+        context = PipelineContext(
+            input_path=INPUT_PATH,
+            output_dir=ROOT / "artifacts" / "fhe_static_unavailable",
+            config=config,
+        )
+        feature = CloudForecastFeatureRecord(
+            timestamp=datetime(2026, 4, 29, 13, 0, 0),
+            schema_version="1.0",
+            feature_set_id="long_term_load_forecast_v1",
+            values={column: 1.0 for column in FORECAST_NUMERIC_FEATURE_COLUMNS},
+        )
+
+        first = task.infer_feature(feature, context)[0]
+        second_timestamp = feature.timestamp + timedelta(seconds=60)
+        second = task.infer_feature(
+            CloudForecastFeatureRecord(
+                timestamp=second_timestamp,
+                schema_version=feature.schema_version,
+                feature_set_id=feature.feature_set_id,
+                values=feature.values,
+            ),
+            context,
+        )[0]
+
+        self.assertEqual(fake_client.calls, 1)
+        self.assertEqual(first.inference_status, "unavailable")
+        self.assertEqual(second.inference_status, "unavailable")
+        self.assertEqual(second.timestamp, second_timestamp)
 
     def test_fhe_nilm_and_cohort_tasks_use_their_feature_contracts(self) -> None:
         class FakeFheClient:
@@ -1280,6 +1796,34 @@ class StreamingPipelineTests(unittest.TestCase):
 
         client._validate_api_config()
 
+    def test_fhe_client_uses_architecture_specific_cache_and_headers(self) -> None:
+        class FakeRequests:
+            def __init__(self):
+                self.post_kwargs = None
+
+            def post(self, **kwargs):
+                self.post_kwargs = kwargs
+                return SimpleNamespace(status_code=200)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client = HyfhenetFheClient(
+                FheClientConfig(
+                    api_url="https://fhe.example",
+                    api_key="secret",
+                    cache_dir=Path(tmpdir) / "cache",
+                    architecture="AMD64",
+                )
+            )
+            fake_requests = FakeRequests()
+
+            client._post_inference("forecast", "abc123", b"payload", fake_requests)
+
+            self.assertEqual(client.architecture, "x86_64")
+            self.assertEqual(client.models_dir, Path(tmpdir) / "cache" / "models" / "x86_64")
+            self.assertEqual(client.keys_dir, Path(tmpdir) / "cache" / "fhe-keys" / "x86_64")
+            self.assertEqual(fake_requests.post_kwargs["headers"]["X-Architecture"], "x86_64")
+            self.assertEqual(fake_requests.post_kwargs["headers"]["X-Model-Version"], "abc123")
+
     def test_fhe_client_rejects_unsafe_model_archive_paths(self) -> None:
         class FakeResponse:
             status_code = 200
@@ -1296,8 +1840,10 @@ class StreamingPipelineTests(unittest.TestCase):
         class FakeRequests:
             def __init__(self, payload: bytes) -> None:
                 self.payload = payload
+                self.get_kwargs = None
 
             def get(self, **kwargs):
+                self.get_kwargs = kwargs
                 return FakeResponse(self.payload)
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1312,15 +1858,18 @@ class StreamingPipelineTests(unittest.TestCase):
                     api_url="https://fhe.example",
                     api_key="secret",
                     cache_dir=tmp / "cache",
+                    architecture="arm64",
                 )
             )
+            fake_requests = FakeRequests(archive_path.read_bytes())
 
             with self.assertRaisesRegex(RuntimeError, "Unsafe model archive path"):
                 client._download_model_files(
                     "forecast",
                     tmp / "model",
-                    FakeRequests(archive_path.read_bytes()),
+                    fake_requests,
                     )
+            self.assertEqual(fake_requests.get_kwargs["headers"]["X-Architecture"], "aarch64")
             self.assertFalse((tmp / "outside.txt").exists())
 
     def test_edge_forecast_training_saves_ridge_model(self) -> None:

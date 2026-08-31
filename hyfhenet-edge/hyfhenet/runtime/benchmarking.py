@@ -28,6 +28,10 @@ BENCHMARK_COLUMNS = [
     "p99_total_tick_ms",
     "avg_event_to_model_ms",
     "p95_event_to_model_ms",
+    "avg_edge_local_operations_ms",
+    "p95_edge_local_operations_ms",
+    "avg_cloud_fhe_operations_ms",
+    "p95_cloud_fhe_operations_ms",
     "avg_fhe_cloud_stage_ms",
     "p95_fhe_cloud_stage_ms",
     "cloud_fhe_ok_count",
@@ -98,6 +102,18 @@ def run_gateway_replay_benchmark(
                 "p99_total_tick_ms": latency.get("p99_total_tick_ms"),
                 "avg_event_to_model_ms": latency.get("avg_event_to_model_ms"),
                 "p95_event_to_model_ms": latency.get("p95_event_to_model_ms"),
+                "avg_edge_local_operations_ms": latency.get(
+                    "avg_edge_local_operations_ms"
+                ),
+                "p95_edge_local_operations_ms": latency.get(
+                    "p95_edge_local_operations_ms"
+                ),
+                "avg_cloud_fhe_operations_ms": latency.get(
+                    "avg_cloud_fhe_operations_ms"
+                ),
+                "p95_cloud_fhe_operations_ms": latency.get(
+                    "p95_cloud_fhe_operations_ms"
+                ),
                 "avg_fhe_cloud_stage_ms": latency.get("avg_fhe_cloud_stage_ms"),
                 "p95_fhe_cloud_stage_ms": latency.get("p95_fhe_cloud_stage_ms"),
                 "cloud_fhe_ok_count": cloud_fhe_counts["ok"],
@@ -158,6 +174,22 @@ def _aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
     totals["mean_avg_total_tick_ms"] = _mean_numeric(rows, "avg_total_tick_ms")
     totals["mean_p95_total_tick_ms"] = _mean_numeric(rows, "p95_total_tick_ms")
+    totals["mean_avg_edge_local_operations_ms"] = _mean_numeric(
+        rows,
+        "avg_edge_local_operations_ms",
+    )
+    totals["mean_p95_edge_local_operations_ms"] = _mean_numeric(
+        rows,
+        "p95_edge_local_operations_ms",
+    )
+    totals["mean_avg_cloud_fhe_operations_ms"] = _mean_numeric(
+        rows,
+        "avg_cloud_fhe_operations_ms",
+    )
+    totals["mean_p95_cloud_fhe_operations_ms"] = _mean_numeric(
+        rows,
+        "p95_cloud_fhe_operations_ms",
+    )
     totals["mean_avg_fhe_cloud_stage_ms"] = _mean_numeric(
         rows,
         "avg_fhe_cloud_stage_ms",

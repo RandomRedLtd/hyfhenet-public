@@ -14,7 +14,7 @@ The realised decision evidence, cloud dataset inventory, FHE contracts, and mode
 ## Runtime Flow
 
 ```text
-Zigbee2MQTT or replay CSV
+Zigbee2MQTT, EDF service SDK, or replay CSV
   -> normalize telemetry
   -> update latest sensor state
   -> build aligned snapshots
@@ -33,7 +33,7 @@ If FHE credentials or client dependencies are not configured, the FHE stage emit
 
 | Module | Role |
 |---|---|
-| `hyfhenet/ingestion` | MQTT and replay sources, raw Zigbee2MQTT parsing, MQTT control helpers |
+| `hyfhenet/ingestion` | MQTT, EDF service SDK, and replay sources, raw telemetry parsing, MQTT control helpers |
 | `hyfhenet/processing` | Streaming pipeline stages |
 | `hyfhenet/runtime` | Orchestration, sinks, benchmarking |
 | `hyfhenet/ai` | Local edge analytics package: profile service, anomaly monitor, event gate, and short-horizon forecast runner |
@@ -49,4 +49,4 @@ Kept in git:
 - `models/edge_load_forecast_ridge.json`
 - `models/edge_load_forecast_training_report.md`
 
-Run output belongs under `artifacts/`. FHE client files and evaluation keys belong in the local cache, usually `HYFHENET_FHE_CACHE_DIR` or `/app/.cache/hyfhenet` in Docker.
+Run output belongs under `artifacts/`. FHE client files and evaluation keys belong in the local cache, usually `HYFHENET_FHE_CACHE_DIR` or `/app/.cache/hyfhenet` in Docker. Cache paths are architecture-specific because the backend serves separate `x86_64` and `aarch64` model bundles.

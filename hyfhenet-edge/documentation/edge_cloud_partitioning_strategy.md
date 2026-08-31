@@ -10,7 +10,7 @@ Current measurements come from:
 
 These are workstation measurements from the checked-in capture. Regenerate the report on the MiniPC and Raspberry Pi after live capture; those device-local reports replace the baseline below.
 
-Cloud dataset and training inventory comes from `https://github.com/RandomRedLtd/hyfhenet-fhe` at inspected head `a65749d`. Cloud API serving, compiled FHE server packages, model registries, model-selection reports, and cloud datasets stay outside this edge repository.
+Cloud dataset and training inventory comes from `https://github.com/RandomRedLtd/hyfhenet-fhe` at inspected head `1db2e8b`. FHE API behavior was checked against `https://github.com/RandomRedLtd/hyfhenet-backend` at inspected head `8f0bf2c` and `https://github.com/RandomRedLtd/hyfhenet-fhe-client` at inspected head `0259a5d`. Cloud API serving, compiled FHE server packages, model registries, model-selection reports, and cloud datasets stay outside this edge repository.
 
 ## Current Evidence
 
@@ -63,7 +63,7 @@ artifacts/edge_report/run/cloud_forecast_feature_contract.json
 artifacts/edge_report/run/cloud_model_feature_contracts.json
 ```
 
-The finished backend must expose:
+The backend exposes:
 
 ```text
 GET  /api/fhe/{forecast|nilm|cohort}/client-files
@@ -72,6 +72,10 @@ POST /api/fhe/{forecast|nilm|cohort}/inference
 ```
 
 The edge client downloads model client files, safely extracts them, creates/uploads evaluation keys, encrypts locally, posts encrypted payloads, and decrypts returned ciphertext locally. HTTPS is required by default. Set `HYFHENET_FHE_ALLOW_INSECURE_HTTP=true` only for isolated lab tests without production credentials or private data.
+
+The current backend serves architecture-specific model bundles. The edge client sends `X-Architecture` on client-file downloads and encrypted inference requests, using `x86_64` for MiniPC Linux and `aarch64` for 64-bit Raspberry Pi. Override with `HYFHENET_FHE_ARCHITECTURE` only when auto-detection is wrong; the client cache stores model files and keys under architecture-specific folders.
+
+Live edge gateways can set `HYFHENET_FHE_ASYNC=true` to keep local ticks non-blocking while remote FHE runs in a bounded background worker. Report evidence remains synchronous by default so measured FHE latency samples stay tied to explicit report samples.
 
 If credentials, dependencies, connectivity, model files, or remote inference are unavailable, the gateway writes one `unavailable` result per configured cloud model and continues local processing.
 

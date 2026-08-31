@@ -5,8 +5,8 @@ from concrete.ml.deployment import FHEModelServer
 from fastapi import HTTPException
 from starlette.responses import FileResponse
 
-def fhe_inference(model_name, model_version, iot_device_id, encrypted_inputs):
-    model_path = Path.cwd() / "models" / model_name
+def fhe_inference(model_name, model_version, architecture, iot_device_id, encrypted_inputs):
+    model_path = Path.cwd() / "models" / architecture / model_name
 
     with open(model_path / "client.zip", "rb", buffering=0) as f:
         if model_version != file_digest(f, "sha256").hexdigest():
@@ -21,8 +21,8 @@ def fhe_inference(model_name, model_version, iot_device_id, encrypted_inputs):
 
     return fhe_server.run(encrypted_inputs, evaluation_key)
 
-def get_model_client_files(model_name):
-    client_files_path = Path.cwd() / "models" / model_name / "client-files.zip"
+def get_model_client_files(model_name, architecture):
+    client_files_path = Path.cwd() / "models" / architecture / model_name / "client-files.zip"
 
     return FileResponse(path=client_files_path, media_type="application/octet-stream")
 

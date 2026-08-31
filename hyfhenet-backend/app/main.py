@@ -102,8 +102,8 @@ def log_out(response: Response):
     return response
 
 @app.get("/api/fhe/{model}/client-files")
-def get_model_files(model):
-    return get_model_client_files(model)
+def get_model_files(request: Request, model):
+    return get_model_client_files(model, request.headers.get("X-Architecture"))
 
 @app.post("/api/fhe/{model}/model")
 async def upload_model(model, file: UploadFile):
@@ -134,7 +134,7 @@ async def inference(request: Request, session: SessionDep, model):
 
         start = time.time()
 
-        inference_result = await run_in_threadpool(fhe_inference, model, request.headers.get("X-Model-Version"), iot_device_id, inference_input)
+        inference_result = await run_in_threadpool(fhe_inference, model, request.headers.get("X-Model-Version"), request.headers.get("X-Architecture"), iot_device_id, inference_input)
 
         inference_history_entry.inference_time_ms = int(((time.time() - start) * 1000))
 

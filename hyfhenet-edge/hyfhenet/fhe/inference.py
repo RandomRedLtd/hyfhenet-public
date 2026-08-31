@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any, Callable, Sequence
 
@@ -107,12 +109,25 @@ class RemoteFheTask(FheInferenceTask):
         self.config = _task_config(self.cloud_config, self.MODEL_NAME)
         self.client_factory = client_factory or HyfhenetFheClient
         self.client = None
+        self._static_unavailable_details: str | None = None
 
     def infer_feature(
         self,
         feature_record: CloudForecastFeatureRecord,
         context: PipelineContext,
     ) -> list[ModelInferenceResult]:
+        started_at = time.perf_counter()
+        if self._static_unavailable_details is not None:
+            return [
+                self._result(
+                    feature_record,
+                    status="unavailable",
+                    label=self.UNAVAILABLE_LABEL,
+                    prediction_score=None,
+                    load_score=None,
+                    details=self._static_unavailable_details,
+                )
+            ]
         try:
             client = self._get_client()
             feature_values = {
@@ -126,8 +141,12 @@ class RemoteFheTask(FheInferenceTask):
             )
             if not prediction_values:
                 raise RuntimeError("FHE inference returned no numeric prediction.")
-            return [self._success_result(feature_record, prediction_values)]
+            result = self._success_result(feature_record, prediction_values)
+            return [self._with_timing(result, client, started_at)]
         except Exception as exc:
+            details = f"{exc.__class__.__name__}: {exc}"
+            if _cacheable_unavailable_exception(exc):
+                self._static_unavailable_details = details
             return [
                 self._result(
                     feature_record,
@@ -135,7 +154,7 @@ class RemoteFheTask(FheInferenceTask):
                     label=self.UNAVAILABLE_LABEL,
                     prediction_score=None,
                     load_score=None,
-                    details=f"{exc.__class__.__name__}: {exc}",
+                    details=details,
                 )
             ]
 
@@ -166,6 +185,33 @@ class RemoteFheTask(FheInferenceTask):
             details=details,
         )
 
+    def _with_timing(
+        self,
+        result: ModelInferenceResult,
+        client,
+        started_at: float,
+    ) -> ModelInferenceResult:
+        timing_ms = {
+            key: round(float(value), 3)
+            for key, value in (getattr(client, "last_timing_ms", {}) or {}).items()
+        }
+        timing_ms.setdefault(
+            "fhe_task_total_ms",
+            round(max(time.perf_counter() - started_at, 0.0) * 1000.0, 3),
+        )
+        try:
+            details = json.loads(result.details)
+            if not isinstance(details, dict):
+                details = {"details": result.details}
+        except (TypeError, json.JSONDecodeError):
+            details = {"details": result.details}
+        details["architecture"] = getattr(client, "architecture", None)
+        details["timing_ms"] = timing_ms
+        return replace(
+            result,
+            details=json.dumps(details, ensure_ascii=True, sort_keys=True),
+        )
+
     def _get_client(self):
         if self.client is None:
             self.client = self.client_factory(
@@ -176,6 +222,7 @@ class RemoteFheTask(FheInferenceTask):
                     client_cert_path=self.cloud_config.get("client_cert_path"),
                     client_key_path=self.cloud_config.get("client_key_path"),
                     ca_bundle_path=self.cloud_config.get("ca_bundle_path"),
+                    architecture=self.cloud_config.get("architecture"),
                     request_timeout_seconds=float(
                         self.cloud_config.get("request_timeout_seconds", 60.0)
                     ),
@@ -374,3 +421,17 @@ def _as_float(value: Any) -> float | None:
         except ValueError:
             return None
     return None
+
+
+def _cacheable_unavailable_exception(exc: Exception) -> bool:
+    if not isinstance(exc, RuntimeError):
+        return False
+    message = str(exc)
+    return message.startswith(
+        (
+            "FHE inference requires platform FHE dependencies.",
+            "FHE API URL is not configured.",
+            "FHE API key is not configured.",
+            "FHE API URL must use HTTPS.",
+        )
+    )

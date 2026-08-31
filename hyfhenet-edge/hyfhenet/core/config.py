@@ -109,8 +109,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "client_cert_path": None,
         "client_key_path": None,
         "ca_bundle_path": None,
+        "architecture": None,
         "request_timeout_seconds": 60.0,
         "allow_insecure_http": False,
+        "sample_interval_seconds": None,
+        "async_enabled": False,
+        "max_pending_requests": 1,
+        "async_drain_timeout_seconds": 0.0,
         "tasks": {
             "forecast": {
                 "enabled": True,
@@ -151,6 +156,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "role": "environment_sensor",
             "name": "zigbee_room_climate_sensor",
             "location": "participant_home",
+        },
+        "edf_virtual_datalogger": {
+            "role": "smart_plug",
+            "name": "edf_virtual_datalogger",
+            "location": "edf_service_sdk",
         },
     },
     "gateway_stream": {
@@ -221,6 +231,54 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "client_key_path": None,
         "tls_insecure": False,
     },
+    "edf_service_sdk": {
+        "streams": ["TEMPERATURE", "POWER", "APPARENT_POWER", "METER_INDEXES"],
+        "listen_seconds": 30,
+        "poll_timeout_seconds": 0.1,
+        "default_device_id": "edf_virtual_datalogger",
+        "default_device_role": "smart_plug",
+        "register_unknown_devices": True,
+        "include_unsupported_fields": False,
+        "supported_fields": [
+            "temperature",
+            "humidity",
+            "battery",
+            "state",
+            "power",
+            "voltage",
+            "current",
+            "energy",
+            "energy_today",
+            "energy_yesterday",
+            "energy_month",
+            "linkquality",
+            "active_power",
+            "active_power_w",
+            "meter_power_w",
+            "household_power_w",
+            "energy_wh",
+            "household_energy_wh",
+            "PAPP",
+            "SINSTS",
+            "BASE",
+            "EAST",
+            "EASF01",
+        ],
+        "stream_field_map": {
+            "TEMPERATURE": "temperature",
+            "HUMIDITY": "humidity",
+            "POWER": "power",
+            "APPARENT_POWER": "PAPP",
+            "ACTIVE_POWER": "active_power",
+            "ACTIVE_POWER_W": "active_power_w",
+            "HOUSEHOLD_POWER": "household_power_w",
+            "HOUSEHOLD_POWER_W": "household_power_w",
+            "CONSUMPTION": "energy",
+            "ENERGY": "energy",
+            "ENERGY_WH": "energy_wh",
+            "METER_INDEXES": "BASE",
+        },
+    },
 }
 
 
@@ -280,8 +338,40 @@ def _apply_environment_overrides(config: dict[str, Any]) -> None:
             "client_cert_path": ("HYFHENET_FHE_CLIENT_CERT", str),
             "client_key_path": ("HYFHENET_FHE_CLIENT_KEY", str),
             "ca_bundle_path": ("HYFHENET_FHE_CA_BUNDLE", str),
+            "architecture": ("HYFHENET_FHE_ARCHITECTURE", str),
             "allow_insecure_http": ("HYFHENET_FHE_ALLOW_INSECURE_HTTP", _bool_env),
+            "sample_interval_seconds": ("HYFHENET_FHE_SAMPLE_INTERVAL_SECONDS", int),
+            "async_enabled": ("HYFHENET_FHE_ASYNC", _bool_env),
+            "max_pending_requests": ("HYFHENET_FHE_MAX_PENDING_REQUESTS", int),
+            "async_drain_timeout_seconds": ("HYFHENET_FHE_ASYNC_DRAIN_TIMEOUT_SECONDS", float),
         },
+    )
+    _update_from_env(
+        config.setdefault("edf_service_sdk", {}),
+        {
+            "streams": ("HYFHENET_EDF_SDK_STREAMS", _list_env),
+            "listen_seconds": ("HYFHENET_EDF_SDK_LISTEN_SECONDS", int),
+            "poll_timeout_seconds": ("HYFHENET_EDF_SDK_POLL_TIMEOUT_SECONDS", float),
+            "default_device_id": ("HYFHENET_EDF_SDK_DEFAULT_DEVICE_ID", str),
+            "default_device_role": ("HYFHENET_EDF_SDK_DEFAULT_DEVICE_ROLE", str),
+            "register_unknown_devices": (
+                "HYFHENET_EDF_SDK_REGISTER_UNKNOWN_DEVICES",
+                _bool_env,
+            ),
+            "include_unsupported_fields": (
+                "HYFHENET_EDF_SDK_INCLUDE_UNSUPPORTED_FIELDS",
+                _bool_env,
+            ),
+            "stream_field_map": (
+                "HYFHENET_EDF_SDK_STREAM_FIELD_MAP",
+                _mapping_env,
+            ),
+        },
+    )
+    _apply_fhe_alias_environment_overrides(config.setdefault("fhe_cloud", {}))
+    select_fhe_tasks(
+        config,
+        os.getenv("HYFHENET_FHE_TASKS") or os.getenv("HYFHENET_FHE_ENABLED_TASKS"),
     )
 
 
@@ -296,6 +386,81 @@ def _update_from_env(
         target[key] = parser(raw_value)
 
 
+def _apply_fhe_alias_environment_overrides(fhe_cloud_config: dict[str, Any]) -> None:
+    if not fhe_cloud_config.get("api_url"):
+        api_url = os.getenv("FHE_URL")
+        if api_url:
+            fhe_cloud_config["api_url"] = api_url
+    if not fhe_cloud_config.get("api_key"):
+        api_key = os.getenv("FHE_API")
+        if api_key:
+            fhe_cloud_config["api_key"] = api_key
+
+
 def _bool_env(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _list_env(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _mapping_env(value: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in value.split(","):
+        if not item.strip():
+            continue
+        separator = "=" if "=" in item else ":"
+        if separator not in item:
+            continue
+        key, mapped_value = item.split(separator, 1)
+        key = key.strip()
+        mapped_value = mapped_value.strip()
+        if key and mapped_value:
+            mapping[key] = mapped_value
+    return mapping
+
+
+def select_fhe_tasks(config: dict[str, Any], selected_tasks: str | list[str] | tuple[str, ...] | None) -> None:
+    if selected_tasks is None:
+        return
+    if isinstance(selected_tasks, str):
+        raw_names = [name.strip().lower() for name in selected_tasks.split(",")]
+    else:
+        raw_names = [str(name).strip().lower() for name in selected_tasks]
+    requested = {_normalise_fhe_task_name(name) for name in raw_names if name}
+    if not requested:
+        return
+
+    tasks = config.setdefault("fhe_cloud", {}).setdefault("tasks", {})
+    if "all" in requested:
+        for task_config in tasks.values():
+            task_config["enabled"] = True
+        return
+    if "none" in requested:
+        for task_config in tasks.values():
+            task_config["enabled"] = False
+        return
+
+    unsupported = requested - set(tasks)
+    if unsupported:
+        supported = ", ".join(sorted(tasks))
+        raise ValueError(
+            f"Unsupported FHE task(s): {', '.join(sorted(unsupported))}. "
+            f"Supported tasks: {supported}, all, none."
+        )
+
+    for task_name, task_config in tasks.items():
+        task_config["enabled"] = task_name in requested
+
+
+def _normalise_fhe_task_name(name: str) -> str:
+    aliases = {
+        "long_term_load_forecast": "forecast",
+        "load_forecast": "forecast",
+        "fhe_long_term_load_forecast": "forecast",
+        "fhe_nilm_disaggregation": "nilm",
+        "fhe_cohort_benchmark": "cohort",
+    }
+    return aliases.get(name, name)
 

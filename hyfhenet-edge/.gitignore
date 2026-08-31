@@ -1,0 +1,12 @@
+.idea/
+.venv/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+artifacts/
+.hyfhenet-cache/
+data/cloud/
+models/fhe/
+documentation/reports/*/hyfhenet-main/

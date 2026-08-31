@@ -7,6 +7,7 @@ from typing import Any
 
 from .runtime.benchmarking import run_gateway_replay_benchmark
 from .runtime.stream import (
+    run_gateway_edf_sdk_live,
     run_gateway_stream_replay,
     run_gateway_zigbee_mqtt_capture,
     run_gateway_zigbee_mqtt_live,
@@ -109,6 +110,51 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mqtt_security_args(mqtt_capture)
     _add_fhe_cloud_args(mqtt_capture)
     _add_console_args(mqtt_capture)
+
+    edf_sdk_live = subparsers.add_parser(
+        "edf-sdk-live",
+        help="Consume EDF service SDK DeviceApi events and run the edge pipeline.",
+    )
+    edf_sdk_live.add_argument("--output", type=Path, default=Path("artifacts/gateway_edf_sdk_live"))
+    edf_sdk_live.add_argument("--config", type=Path, default=Path("configs/pilot_1_2_edge.json"))
+    edf_sdk_live.add_argument("--interval-seconds", type=int, default=None)
+    edf_sdk_live.add_argument(
+        "--edf-streams",
+        default=None,
+        help="Comma-separated DeviceApi streams. Defaults to configured EDF SDK streams.",
+    )
+    edf_sdk_live.add_argument("--edf-listen-seconds", type=int, default=None)
+    edf_sdk_live.add_argument("--edf-default-device-id", default=None)
+    edf_sdk_live.add_argument(
+        "--edf-default-device-role",
+        choices=["smart_plug", "household_meter", "environment_sensor", "unknown_device"],
+        default=None,
+        help="Role assigned to SDK devices not present in the pipeline config.",
+    )
+    edf_sdk_live.add_argument(
+        "--edf-stream-field-map",
+        default=None,
+        help="Comma-separated stream=field overrides, for example POWER=household_power_w.",
+    )
+    edf_sdk_live.add_argument(
+        "--edf-include-unsupported-fields",
+        action="store_true",
+        default=None,
+        help="Forward SDK stream fields not listed in the configured supported fields.",
+    )
+    edf_sdk_live.add_argument(
+        "--edf-no-register-unknown-devices",
+        action="store_true",
+        default=None,
+        help="Do not add unseen SDK device IDs to the runtime device-role map.",
+    )
+    edf_sdk_live.add_argument(
+        "--continuous",
+        action="store_true",
+        help="Run until interrupted instead of stopping after the configured SDK listen window.",
+    )
+    _add_fhe_cloud_args(edf_sdk_live)
+    _add_console_args(edf_sdk_live)
 
     benchmark = subparsers.add_parser(
         "benchmark-pipeline",
@@ -214,6 +260,26 @@ def main(argv: list[str] | None = None) -> int:
         _print_stream_summary(summary)
         return 0
 
+    if args.command == "edf-sdk-live":
+        summary = run_gateway_edf_sdk_live(
+            output_dir=args.output,
+            config_path=args.config,
+            interval_seconds=args.interval_seconds,
+            edf_streams=_optional_csv_arg(args.edf_streams),
+            edf_listen_seconds=-1 if args.continuous else args.edf_listen_seconds,
+            edf_default_device_id=args.edf_default_device_id,
+            edf_default_device_role=args.edf_default_device_role,
+            edf_stream_field_map=_optional_mapping_arg(args.edf_stream_field_map),
+            edf_register_unknown_devices=(
+                False if args.edf_no_register_unknown_devices else None
+            ),
+            edf_include_unsupported_fields=args.edf_include_unsupported_fields,
+            console_log_level=args.log_level,
+            fhe_cloud_overrides=_fhe_cloud_overrides_from_args(args),
+        )
+        _print_stream_summary(summary)
+        return 0
+
     if args.command == "mqtt-capture":
         summary = run_gateway_zigbee_mqtt_capture(
             capture_output_path=args.capture_output,
@@ -244,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"MQTT capture complete: {summary['capture_path']}")
             print(f"Source: {summary['input_path']}")
-            _print_mqtt_runtime_summary(summary)
+            _print_live_runtime_summary(summary)
             print(f"Raw events: {summary['raw_event_count']}")
             print(f"Coverage: {summary['time_range']['start']} -> {summary['time_range']['end']}")
             print(f"Devices: {summary['devices']}")
@@ -352,6 +418,36 @@ def _add_fhe_cloud_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Allow http:// FHE API URLs for isolated lab testing only.",
     )
+    parser.add_argument(
+        "--fhe-sample-interval-seconds",
+        type=int,
+        default=None,
+        help="Run remote FHE at most once per this many stream seconds. Set 0 to run every tick.",
+    )
+    parser.add_argument(
+        "--fhe-tasks",
+        default=None,
+        help="Comma-separated FHE tasks to run: forecast,nilm,cohort, all, or none.",
+    )
+    parser.add_argument(
+        "--fhe-async",
+        dest="fhe_async_enabled",
+        action="store_true",
+        default=None,
+        help="Dispatch FHE calls in a background worker so edge ticks do not wait on cloud inference.",
+    )
+    parser.add_argument(
+        "--fhe-sync",
+        dest="fhe_async_enabled",
+        action="store_false",
+        help="Use the default synchronous FHE path.",
+    )
+    parser.add_argument(
+        "--fhe-max-pending-requests",
+        type=int,
+        default=None,
+        help="Maximum queued or running async FHE requests before new samples are skipped.",
+    )
 
 
 def _add_mqtt_security_args(parser: argparse.ArgumentParser) -> None:
@@ -388,6 +484,14 @@ def _fhe_cloud_overrides_from_args(args: argparse.Namespace) -> dict[str, Any]:
         overrides["ca_bundle_path"] = str(args.fhe_ca_bundle)
     if getattr(args, "fhe_allow_insecure_http", None):
         overrides["allow_insecure_http"] = True
+    if getattr(args, "fhe_sample_interval_seconds", None) is not None:
+        overrides["sample_interval_seconds"] = args.fhe_sample_interval_seconds
+    if getattr(args, "fhe_tasks", None):
+        overrides["enabled_tasks"] = args.fhe_tasks
+    if getattr(args, "fhe_async_enabled", None) is not None:
+        overrides["async_enabled"] = args.fhe_async_enabled
+    if getattr(args, "fhe_max_pending_requests", None) is not None:
+        overrides["max_pending_requests"] = args.fhe_max_pending_requests
     return overrides
 
 
@@ -395,10 +499,36 @@ def _optional_path_arg(value: Path | None) -> str | None:
     return str(value) if value is not None else None
 
 
+def _optional_csv_arg(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _optional_mapping_arg(value: str | None) -> dict[str, str] | None:
+    if not value:
+        return None
+    mapping: dict[str, str] = {}
+    for item in value.split(","):
+        if not item.strip():
+            continue
+        separator = "=" if "=" in item else ":"
+        if separator not in item:
+            raise ValueError(
+                f"Invalid mapping item '{item}'. Use stream=field pairs."
+            )
+        key, mapped_value = item.split(separator, 1)
+        key = key.strip()
+        mapped_value = mapped_value.strip()
+        if key and mapped_value:
+            mapping[key] = mapped_value
+    return mapping
+
+
 def _print_stream_summary(summary: dict[str, Any]) -> None:
     print(f"Gateway stream complete: {summary['output_dir']}")
     print(f"Source: {summary['input_path']}")
-    _print_mqtt_runtime_summary(summary)
+    _print_live_runtime_summary(summary)
     print(f"Raw events: {summary['raw_event_count']}")
     print(f"Normalized events: {summary['normalized_event_count']}")
     print(f"Aligned snapshots: {summary['snapshot_count']}")
@@ -418,6 +548,16 @@ def _print_stream_summary(summary: dict[str, Any]) -> None:
         print(
             "Latency avg/p95 total tick ms: "
             f"{latency['avg_total_tick_ms']} / {latency['p95_total_tick_ms']}"
+        )
+        print(
+            "Latency avg/p95 edge local ms: "
+            f"{latency.get('avg_edge_local_operations_ms')} / "
+            f"{latency.get('p95_edge_local_operations_ms')}"
+        )
+        print(
+            "Latency avg/p95 cloud FHE ms: "
+            f"{latency.get('avg_cloud_fhe_operations_ms')} / "
+            f"{latency.get('p95_cloud_fhe_operations_ms')}"
         )
     if summary.get("performance_summary"):
         performance = summary["performance_summary"]
@@ -444,19 +584,22 @@ def _print_benchmark_summary(summary: dict[str, Any]) -> None:
     print(f"Total snapshots: {totals['snapshot_count']}")
     print(f"Total model results: {totals['model_result_count']}")
     print(f"Mean avg total tick ms: {totals['mean_avg_total_tick_ms']}")
+    print(f"Mean avg edge local ms: {totals.get('mean_avg_edge_local_operations_ms')}")
+    print(f"Mean avg cloud FHE ms: {totals.get('mean_avg_cloud_fhe_operations_ms')}")
     print(f"Mean forecast MAE W: {totals.get('mean_forecast_mae_w')}")
     print(f"Cloud/FHE ok rate: {totals.get('cloud_fhe_ok_rate')}")
 
 
-def _print_mqtt_runtime_summary(summary: dict[str, Any]) -> None:
+def _print_live_runtime_summary(summary: dict[str, Any]) -> None:
     if not summary.get("stream_mode"):
         return
     print(f"Stream mode: {summary['stream_mode']}")
     listen_seconds = int(summary.get("mqtt_listen_seconds", 0))
+    source_label = "EDF SDK" if str(summary["stream_mode"]).startswith("edf") else "MQTT"
     if listen_seconds < 0:
-        print("MQTT listen window: continuous until Ctrl+C or process stop")
+        print(f"{source_label} listen window: continuous until Ctrl+C or process stop")
     else:
-        print(f"MQTT listen window: {listen_seconds} seconds")
+        print(f"{source_label} listen window: {listen_seconds} seconds")
     if summary.get("stop_reason") == "configured_listen_window_elapsed":
         print(
             "Stop reason: configured listen window elapsed "

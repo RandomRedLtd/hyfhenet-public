@@ -19,8 +19,10 @@ def build_latency_summary(samples: list[LatencySample]) -> dict[str, Any] | None
     event_to_model_ms = _metric_values(samples, "event_to_model_ms")
     event_gate_stage_ms = _metric_values(samples, "event_gate_stage_ms")
     forecast_prep_stage_ms = _metric_values(samples, "forecast_prep_stage_ms")
+    edge_local_operations_ms = _edge_local_operation_values(samples)
     fhe_cloud_samples = [sample for sample in samples if sample.fhe_cloud_sampled]
     fhe_cloud_stage_ms = _metric_values(fhe_cloud_samples, "fhe_cloud_stage_ms")
+    cloud_fhe_operations_ms = _cloud_fhe_operation_values(fhe_cloud_samples)
     preprocessing_stage_ms = _metric_values(samples, "snapshot_stage_ms")
     feature_stage_ms = _metric_values(samples, "feature_stage_ms")
     model_stage_ms = _metric_values(samples, "model_stage_ms")
@@ -28,9 +30,12 @@ def build_latency_summary(samples: list[LatencySample]) -> dict[str, Any] | None
 
     return {
         "sample_count": len(samples),
+        "edge_local_sample_count": len(edge_local_operations_ms),
         "fhe_cloud_sample_count": len(fhe_cloud_samples),
         **_latency_metric("total_tick_ms", total_tick_ms),
         **_latency_metric("event_to_model_ms", event_to_model_ms),
+        **_latency_metric("edge_local_operations_ms", edge_local_operations_ms),
+        **_latency_metric("cloud_fhe_operations_ms", cloud_fhe_operations_ms),
         **_latency_metric("preprocessing_stage_ms", preprocessing_stage_ms),
         **_latency_metric("feature_stage_ms", feature_stage_ms),
         **_latency_metric("event_gate_stage_ms", event_gate_stage_ms),
@@ -42,8 +47,8 @@ def build_latency_summary(samples: list[LatencySample]) -> dict[str, Any] | None
 
 
 def build_performance_summary(
-        runtime: StreamingPipelineRuntime,
-        wall_clock_elapsed_seconds: float,
+    runtime: StreamingPipelineRuntime,
+    wall_clock_elapsed_seconds: float,
 ) -> dict[str, Any]:
     event_seconds = None
     if runtime.first_event_timestamp is not None and runtime.last_event_timestamp is not None:
@@ -60,7 +65,7 @@ def build_performance_summary(
         "normalized_events_per_wall_second": _round(
             runtime.normalized_event_count / elapsed,
             6,
-            ),
+        ),
         "snapshots_per_wall_second": _round(runtime.snapshot_count / elapsed, 6),
         "model_results_per_wall_second": _round(runtime.model_result_count / elapsed, 6),
         "avg_raw_events_per_snapshot": _round(
@@ -75,7 +80,7 @@ def build_performance_summary(
 
 
 def build_forecast_quality_summary(
-        evaluations: list[EdgeForecastEvaluationRecord],
+    evaluations: list[EdgeForecastEvaluationRecord],
 ) -> dict[str, Any] | None:
     if not evaluations:
         return None
@@ -90,7 +95,7 @@ def build_forecast_quality_summary(
 
 
 def build_model_result_summary(
-        results: list[ModelInferenceResult],
+    results: list[ModelInferenceResult],
 ) -> dict[str, Any] | None:
     if not results:
         return None
@@ -132,6 +137,43 @@ def _metric_values(samples: list[LatencySample], field_name: str) -> list[float]
     return values
 
 
+def _edge_local_operation_values(samples: list[LatencySample]) -> list[float]:
+    values: list[float] = []
+    local_fields = (
+        "snapshot_stage_ms",
+        "feature_stage_ms",
+        "event_gate_stage_ms",
+        "forecast_prep_stage_ms",
+        "service_stage_ms",
+        "model_stage_ms",
+    )
+    for sample in samples:
+        if sample.edge_local_operations_ms is not None:
+            values.append(float(sample.edge_local_operations_ms))
+            continue
+        stage_values = [
+            float(value)
+            for field_name in local_fields
+            if (value := getattr(sample, field_name)) is not None
+        ]
+        if not sample.fhe_cloud_sampled and sample.fhe_cloud_stage_ms is not None:
+            stage_values.append(float(sample.fhe_cloud_stage_ms))
+        if stage_values:
+            values.append(sum(stage_values))
+    return values
+
+
+def _cloud_fhe_operation_values(samples: list[LatencySample]) -> list[float]:
+    values: list[float] = []
+    for sample in samples:
+        value = sample.cloud_fhe_operations_ms
+        if value is None:
+            value = sample.fhe_cloud_stage_ms
+        if value is not None:
+            values.append(float(value))
+    return values
+
+
 def _latency_metric(prefix: str, values: list[float]) -> dict[str, float | None]:
     return {
         f"avg_{prefix}": _round(_average(values)),
@@ -159,7 +201,7 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 
 
 def _forecast_quality_metrics(
-        evaluations: list[EdgeForecastEvaluationRecord],
+    evaluations: list[EdgeForecastEvaluationRecord],
 ) -> dict[str, Any]:
     predictions = [float(evaluation.predicted_household_power_w) for evaluation in evaluations]
     targets = [float(evaluation.target_household_power_w) for evaluation in evaluations]

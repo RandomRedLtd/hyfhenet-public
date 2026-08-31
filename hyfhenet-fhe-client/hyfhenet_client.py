@@ -8,16 +8,19 @@ from concrete.ml.deployment import FHEModelClient
 from dotenv import load_dotenv
 from pandas import DataFrame
 from hashlib import file_digest
+import platform
 
 class HyfhenetClient():
 
-    __slots__ = ("api_key", "api_url", "root_dir", "keys_dir", "models_dir")
+    __slots__ = ("api_key", "api_url", "root_dir", "keys_dir", "models_dir", "architecture")
 
     def __init__(self):
         load_dotenv()
 
         self.api_key = os.getenv("API_KEY")
         self.api_url = os.getenv("API_URL")
+
+        self.architecture = platform.machine().lower()
 
         self.__bootstrap()
 
@@ -64,7 +67,7 @@ class HyfhenetClient():
 
             model_path.mkdir()
 
-        open(model_zip_path, "wb").write(requests.get(url=f"{self.api_url}/api/fhe/{model_name}/client-files", headers={"X-Api-Key": self.api_key}, stream=True).raw.data)
+        open(model_zip_path, "wb").write(requests.get(url=f"{self.api_url}/api/fhe/{model_name}/client-files", headers={"X-Api-Key": self.api_key, "X-Architecture": self.architecture}, stream=True).raw.data)
 
         model_zip_file = ZipFile(model_zip_path, "r")
 
@@ -80,7 +83,7 @@ class HyfhenetClient():
 
         response = requests.post(
             url=f"{self.api_url}/api/fhe/{model_name}/inference",
-            headers={ "Content-Type": "application/octet-stream", "X-Api-Key": self.api_key, "X-Model-Version": model_version },
+            headers={ "Content-Type": "application/octet-stream", "X-Api-Key": self.api_key, "X-Model-Version": model_version, "X-Architecture": self.architecture },
             data=encrypted_inputs,
             stream=True
         )
@@ -93,7 +96,7 @@ class HyfhenetClient():
 
                 response = requests.post(
                     url=f"{self.api_url}/api/fhe/{model_name}/inference",
-                    headers={ "Content-Type": "application/octet-stream", "X-Api-Key": self.api_key, "X-Model-Version": model_version },
+                    headers={ "Content-Type": "application/octet-stream", "X-Api-Key": self.api_key, "X-Model-Version": model_version, "X-Architecture": self.architecture },
                     data=encrypted_inputs,
                     stream=True
                 )

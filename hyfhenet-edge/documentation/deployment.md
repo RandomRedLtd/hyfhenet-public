@@ -17,10 +17,24 @@ The report is regenerated on the device that runs it. Hostname, platform, CPU co
 - Network access to the MQTT broker used by Zigbee2MQTT
 - This repository copied or cloned onto the edge device
 - Optional: remote FHE API URL/key and client certificates for encrypted cloud inference
+- Optional for French virtual-datalogger runs: the private `service_sdk_python` package and the environment variables required by `DeviceApi.from_env()`
 
-The default image is the recommended first deployment target. It runs the full local gateway and report generator, and it records remote FHE outputs as `unavailable` until FHE credentials and client dependencies are installed.
+The default gateway image is the recommended first deployment target. It runs the full local gateway and records remote FHE outputs as `unavailable` until FHE credentials and client dependencies are installed. The report service uses a separate image name so optional FHE/report dependencies do not overwrite the lightweight live-gateway image.
 
 Remote FHE API URLs must use HTTPS by default. Plain HTTP is rejected unless `HYFHENET_FHE_ALLOW_INSECURE_HTTP=true` is set for isolated lab testing.
+
+## Quick New-Device Flow
+
+1. Install Docker Engine and the Docker Compose plugin.
+2. Clone the repo: `git clone https://github.com/RandomRedLtd/HYFHENET.git && cd HYFHENET`.
+3. Create config: `cp .env.example .env`.
+4. Edit `.env`: set `HYFHENET_ZIGBEE_HOST`, MQTT credentials/TLS if needed, `FHE_URL=https://hyfhe.net`, `FHE_API=<api-key>`, and `HYFHENET_REPORT_VIDEOS=false`.
+5. Build the lightweight gateway: `docker compose build gateway`.
+6. Start live gateway: `docker compose up -d gateway`.
+7. Capture evidence: `docker compose --profile capture run --rm capture`.
+8. Build full report image only if remote FHE dependencies are needed: `HYFHENET_REPORT_INSTALL_FHE_DEPS=true docker compose build report`.
+9. Run report: `docker compose --profile report run --rm report`.
+10. Review `artifacts/edge_report/README.md`, `manifest.json`, `showcase.html`, and `run/latency.csv`.
 
 ## 1. Prepare The Device
 
@@ -105,7 +119,37 @@ docker compose logs -f gateway
 
 The default Docker base image and Debian packages are multi-architecture. Start with the default image on Raspberry Pi; optional full FHE-client dependencies are platform-sensitive and should be validated separately on the target OS.
 
-## 4. Capture Device Evidence
+For remote FHE calls, the edge client automatically sends `X-Architecture: aarch64` on 64-bit Raspberry Pi and `X-Architecture: x86_64` on MiniPC Linux. Leave `HYFHENET_FHE_ARCHITECTURE` blank unless you are deliberately overriding a lab run.
+
+## 4. EDF Service SDK Mode
+
+Use this mode when the edge gateway must consume the French virtual datalogger through the EDF SDK instead of local MQTT/Zigbee devices:
+
+```text
+DATALOGGER_GATEWAY_URL=http://localhost:8080
+DATALOGGER_GATEWAY_TOKEN=<application-or-service-token>
+```
+
+```bash
+python main.py edf-sdk-live --output artifacts/gateway_edf_sdk_live --continuous --log-level progress
+```
+
+The default SDK streams are `TEMPERATURE,POWER,APPARENT_POWER,METER_INDEXES`. `POWER` is treated as plug power, while the wiki-documented Lixee meter streams `APPARENT_POWER` and `METER_INDEXES` are treated as household meter power and energy. If EDF confirms that `POWER` is aggregate meter consumption too, set:
+
+```text
+HYFHENET_EDF_SDK_STREAM_FIELD_MAP=POWER=household_power_w
+HYFHENET_EDF_SDK_DEFAULT_DEVICE_ROLE=household_meter
+```
+
+For Docker runs, build the gateway with the private SDK only when this mode is needed. The SDK currently declares Python 3.13+, so set `HYFHENET_PYTHON_IMAGE=python:3.13-slim-bookworm` for EDF SDK gateway builds. Set `HYFHENET_EDF_SERVICE_SDK_PACKAGE` to the package name, private index package, or authenticated Git URL appropriate for your environment:
+
+```bash
+HYFHENET_PYTHON_IMAGE=python:3.13-slim-bookworm \
+HYFHENET_GATEWAY_INSTALL_EDF_SERVICE_SDK=true docker compose build gateway
+docker compose run --rm gateway edf-sdk-live --output artifacts/gateway_edf_sdk_live --continuous --log-level progress
+```
+
+## 5. Capture Device Evidence
 
 Capture a fixed MQTT window and run the pipeline against the same data:
 
@@ -122,7 +166,7 @@ artifacts/gateway_mqtt_capture/
 
 Increase `HYFHENET_ZIGBEE_LISTEN_SECONDS` in `.env` when you need a longer evidence window.
 
-## 5. Regenerate The Report On The Device
+## 6. Regenerate The Report On The Device
 
 Run:
 
@@ -131,6 +175,10 @@ docker compose --profile report run --rm report
 ```
 
 The default report replay interval is 5 seconds. Keep `HYFHENET_REPORT_INTERVAL_SECONDS=5` for short captures; increase it only when the capture window still leaves at least 100 latency samples.
+
+When the full FHE client image is connected to the cloud, set `HYFHENET_REPORT_FHE_SAMPLE_INTERVAL_SECONDS` to bound remote FHE calls during report replay. `60` is a useful default for normal evidence runs; use a larger value such as `300` for first-device smoke reports or slow networks.
+
+When a report only needs selected encrypted outputs, set `HYFHENET_REPORT_FHE_TASKS=forecast`, `forecast,nilm`, `cohort`, `all`, or `none`.
 
 The report command now prints `[report] ...` progress lines and updates `artifacts/edge_report/_status.json` while it runs. On slower edge devices, skip MP4 rendering when you only need the evidence files:
 
@@ -154,7 +202,7 @@ artifacts/edge_report/model/model_comparison.csv
 
 The report is generated output and is intentionally ignored by Git.
 
-## 6. Deployment Evidence Targets
+## 7. Deployment Evidence Targets
 
 Use these as practical checks when generating MiniPC and Raspberry Pi evidence. They are review thresholds, not production SLAs.
 
@@ -171,7 +219,7 @@ Use these as practical checks when generating MiniPC and Raspberry Pi evidence. 
 
 Generate final review evidence from a real capture with `HYFHENET_REPORT_SOURCE=input`. Use synthetic report data only for demonstrations.
 
-## 7. Optional Full FHE Client Image
+## 8. Optional Full FHE Client Image
 
 Set FHE API values in `.env`:
 
@@ -181,25 +229,28 @@ HYFHENET_FHE_API_KEY=<device-api-key>
 HYFHENET_FHE_CLIENT_CERT=
 HYFHENET_FHE_CLIENT_KEY=
 HYFHENET_FHE_CA_BUNDLE=
+HYFHENET_FHE_ARCHITECTURE=
 HYFHENET_FHE_ALLOW_INSECURE_HTTP=false
 ```
 
-Build the image with optional FHE dependencies:
+Build only the report image with optional FHE dependencies when encrypted cloud evidence is needed:
 
 ```bash
-HYFHENET_INSTALL_FHE_DEPS=true docker compose build gateway capture report
+HYFHENET_REPORT_INSTALL_FHE_DEPS=true docker compose build report
 ```
 
 On Windows PowerShell:
 
 ```powershell
-$env:HYFHENET_INSTALL_FHE_DEPS="true"
-docker compose build gateway capture report
+$env:HYFHENET_REPORT_INSTALL_FHE_DEPS="true"
+docker compose build report
 ```
+
+For live MQTT runs against slow remote FHE, keep report mode synchronous but enable non-blocking dispatch on the gateway with `HYFHENET_FHE_ASYNC=true`. Use `HYFHENET_FHE_MAX_PENDING_REQUESTS=1` to prevent backlogs and `HYFHENET_FHE_SAMPLE_INTERVAL_SECONDS=60` to cap call frequency.
 
 If the optional dependency build is not available for the target architecture, keep the default image and verify local gateway behavior, capture, report generation, and the explicit `unavailable` FHE status.
 
-## 8. Useful Validation Commands
+## 9. Useful Validation Commands
 
 Replay the included sample without MQTT:
 

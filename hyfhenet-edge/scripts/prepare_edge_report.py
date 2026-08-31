@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hyfhenet.ai.models import MODEL_RESULT_COLUMNS
+from hyfhenet.core.config import select_fhe_tasks
 from hyfhenet.core.interfaces import PipelineContext
 from hyfhenet.core.models import (
     FeatureWindow,
@@ -92,9 +93,6 @@ class ReportSink(AppendFileStreamingSink):
         self._features = None
         self._feature_writer = None
         self._model_inputs = None
-        self._latency = None
-        self._latency_writer = None
-        self._cycle = 0
 
     def open(self, context: PipelineContext) -> None:
         super().open(context)
@@ -104,18 +102,12 @@ class ReportSink(AppendFileStreamingSink):
         self._model_inputs = (context.output_dir / "model_inputs.jsonl").open(
             "w", encoding="utf-8"
         )
-        self._latency = (context.output_dir / "latency.csv").open("w", **CSV_KWARGS)
-        self._latency_writer = csv.DictWriter(
-            self._latency,
-            fieldnames=["cycle", *latency_columns()],
-        )
-        self._latency_writer.writeheader()
 
     def append_normalized_event(
-            self,
-            raw_event: RawTelemetryEvent,
-            normalized_event: NormalizedEvent,
-            context: PipelineContext,
+        self,
+        raw_event: RawTelemetryEvent,
+        normalized_event: NormalizedEvent,
+        context: PipelineContext,
     ) -> None:
         if self._normalized is None:
             return
@@ -145,9 +137,9 @@ class ReportSink(AppendFileStreamingSink):
         self._snapshot_writer.writerow(snapshot)
 
     def append_feature_window(
-            self,
-            feature_window: FeatureWindow,
-            context: PipelineContext,
+        self,
+        feature_window: FeatureWindow,
+        context: PipelineContext,
     ) -> None:
         if self._feature_writer is None:
             self._features = (context.output_dir / "features.csv").open(
@@ -168,26 +160,15 @@ class ReportSink(AppendFileStreamingSink):
             json.dumps(model_input.to_record(), ensure_ascii=True, sort_keys=True) + "\n"
         )
 
-    def append_latency_sample(
-            self,
-            latency_sample: LatencySample,
-            context: PipelineContext,
-    ) -> None:
-        if self._latency_writer is None:
-            return
-        self._cycle += 1
-        self._latency_writer.writerow({"cycle": self._cycle, **latency_sample.to_record()})
-
     def close(self, summary: GatewayStreamRunSummary, context: PipelineContext) -> None:
         try:
             super().close(summary, context)
         finally:
             for handle in (
-                    self._normalized,
-                    self._snapshots,
-                    self._features,
-                    self._model_inputs,
-                    self._latency,
+                self._normalized,
+                self._snapshots,
+                self._features,
+                self._model_inputs,
             ):
                 if handle is not None:
                     handle.close()
@@ -234,6 +215,7 @@ def run(args: argparse.Namespace) -> int:
         load_json(report_config_path),
         args.fhe_sample_interval_seconds,
     )
+    config = with_report_fhe_tasks(config, args.fhe_tasks)
     if reuse_fhe_report is not None:
         config = with_reused_fhe_report(config, reuse_fhe_report)
     if args.skip_training:
@@ -282,6 +264,7 @@ def run(args: argparse.Namespace) -> int:
         "replaying report capture",
         interval_seconds=args.interval_seconds,
         fhe_sample_interval_seconds=args.fhe_sample_interval_seconds,
+        fhe_tasks=args.fhe_tasks,
         reuse_fhe_report=str(reuse_fhe_report) if reuse_fhe_report else None,
     )
     write_report_status(
@@ -289,6 +272,7 @@ def run(args: argparse.Namespace) -> int:
         "replaying report capture",
         interval_seconds=args.interval_seconds,
         fhe_sample_interval_seconds=args.fhe_sample_interval_seconds,
+        fhe_tasks=args.fhe_tasks,
         reuse_fhe_report=str(reuse_fhe_report) if reuse_fhe_report else None,
     )
     run_summary = run_report_replay(
@@ -373,6 +357,11 @@ def add_report_arguments(arg_parser: argparse.ArgumentParser) -> argparse.Argume
         ),
     )
     arg_parser.add_argument(
+        "--fhe-tasks",
+        default=env_str("HYFHENET_REPORT_FHE_TASKS"),
+        help="Comma-separated report FHE tasks to run: forecast,nilm,cohort, all, or none.",
+    )
+    arg_parser.add_argument(
         "--reuse-fhe-report",
         type=Path,
         default=env_path("HYFHENET_REPORT_REUSE_FHE_REPORT"),
@@ -381,7 +370,12 @@ def add_report_arguments(arg_parser: argparse.ArgumentParser) -> argparse.Argume
             "while measuring all other stages in the fresh replay."
         ),
     )
-    arg_parser.add_argument("--benchmark-runs", type=int, default=4)
+    arg_parser.add_argument(
+        "--benchmark-runs",
+        type=int,
+        default=env_int("HYFHENET_REPORT_BENCHMARK_RUNS", 4),
+        help="Number of summary benchmark replays. Set 0 to skip benchmark replay.",
+    )
     arg_parser.add_argument("--training-horizon-minutes", type=int, default=1)
     arg_parser.add_argument("--ridge-alpha", type=float, default=300.0)
     arg_parser.add_argument("--train-fraction", type=float, default=0.7)
@@ -453,6 +447,13 @@ def env_path(name: str) -> Path | None:
     return Path(value)
 
 
+def env_str(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None or value.strip() == "":
+        return None
+    return value
+
+
 def report_progress(message: str, **fields: Any) -> None:
     details = " ".join(f"{key}={value}" for key, value in fields.items())
     suffix = f" {details}" if details else ""
@@ -474,12 +475,12 @@ def create_report_dirs(out: Path) -> None:
 
 
 def build_mock_report_input(
-        base_config: dict[str, Any],
-        out: Path,
-        cycles: int,
-        plug_count: int,
-        interval_seconds: int,
-        seed: int,
+    base_config: dict[str, Any],
+    out: Path,
+    cycles: int,
+    plug_count: int,
+    interval_seconds: int,
+    seed: int,
 ) -> tuple[Path, Path]:
     devices = mock_devices(plug_count)
     capture_path = out / "data" / "received_telemetry.csv"
@@ -545,11 +546,11 @@ def write_device_inventory(devices: list[Device], path: Path) -> None:
 
 
 def write_mock_capture(
-        path: Path,
-        devices: list[Device],
-        cycles: int,
-        interval_seconds: int,
-        seed: int,
+    path: Path,
+    devices: list[Device],
+    cycles: int,
+    interval_seconds: int,
+    seed: int,
 ) -> None:
     rng = random.Random(seed)
     plugs = [device for device in devices if device.role == "smart_plug"]
@@ -586,7 +587,7 @@ def write_mock_capture(
             household_power = max(
                 0.0,
                 plug_total + 120.0 + 25.0 * math.sin(step / 21.0) + rng.uniform(-6, 6),
-                )
+            )
             energy[meter.device_id] += household_power * interval_seconds / 3600.0
             temperature = 21.0 + 1.6 * math.sin(step / 90.0) + rng.uniform(-0.1, 0.1)
             humidity = 45.0 + 4.0 * math.sin(step / 70.0) + rng.uniform(-0.4, 0.4)
@@ -616,11 +617,11 @@ def write_mock_capture(
 
 
 def appliance_power(
-        appliance: str,
-        step: int,
-        cycles: int,
-        index: int,
-        rng: random.Random,
+    appliance: str,
+    step: int,
+    cycles: int,
+    index: int,
+    rng: random.Random,
 ) -> float:
     noise = rng.uniform(-1.5, 1.5)
     if appliance == "fridge":
@@ -641,11 +642,11 @@ def appliance_power(
 
 
 def write_measurements(
-        writer: csv.DictWriter,
-        timestamp: datetime,
-        device_id: str,
-        values: dict[str, Any],
-        source: str,
+    writer: csv.DictWriter,
+    timestamp: datetime,
+    device_id: str,
+    values: dict[str, Any],
+    source: str,
 ) -> None:
     for field, value in values.items():
         writer.writerow(
@@ -660,9 +661,9 @@ def write_measurements(
 
 
 def configured_for_training(
-        config: dict[str, Any],
-        model_path: Path,
-        horizon_minutes: int,
+    config: dict[str, Any],
+    model_path: Path,
+    horizon_minutes: int,
 ) -> dict[str, Any]:
     prepared = json.loads(json.dumps(config))
     prepared["cloud_forecast"]["horizons_minutes"] = [horizon_minutes]
@@ -680,12 +681,21 @@ def configured_for_runtime(config: dict[str, Any], model_path: Path) -> dict[str
 
 
 def with_report_fhe_sampling(
-        config: dict[str, Any],
-        sample_interval_seconds: int | None,
+    config: dict[str, Any],
+    sample_interval_seconds: int | None,
 ) -> dict[str, Any]:
     prepared = json.loads(json.dumps(config))
     if sample_interval_seconds is not None and sample_interval_seconds > 0:
         prepared.setdefault("fhe_cloud", {})["sample_interval_seconds"] = sample_interval_seconds
+    return prepared
+
+
+def with_report_fhe_tasks(
+    config: dict[str, Any],
+    selected_tasks: str | None,
+) -> dict[str, Any]:
+    prepared = json.loads(json.dumps(config))
+    select_fhe_tasks(prepared, selected_tasks)
     return prepared
 
 
@@ -698,8 +708,8 @@ def with_reused_fhe_report(config: dict[str, Any], source_report: Path) -> dict[
 
 
 def resolve_edge_model_path(
-        config: dict[str, Any],
-        explicit_model_path: Path | None,
+    config: dict[str, Any],
+    explicit_model_path: Path | None,
 ) -> Path:
     if explicit_model_path is not None:
         path = explicit_model_path
@@ -716,10 +726,10 @@ def resolve_edge_model_path(
 
 
 def copy_existing_edge_forecast_model(
-        source: Path,
-        destination: Path,
-        training_dataset_path: Path,
-        report_path: Path,
+    source: Path,
+    destination: Path,
+    training_dataset_path: Path,
+    report_path: Path,
 ) -> dict[str, Any]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
@@ -812,10 +822,10 @@ def model_metadata(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_report_replay(
-        capture_path: Path,
-        config_path: Path,
-        out: Path,
-        interval_seconds: int,
+    capture_path: Path,
+    config_path: Path,
+    out: Path,
+    interval_seconds: int,
 ) -> dict[str, Any]:
     context = build_gateway_stream_context(
         input_path=capture_path,
@@ -864,9 +874,9 @@ def resolve_reuse_fhe_report(path: Path | None) -> Path | None:
 
 
 def apply_reused_fhe_report(
-        run_dir: Path,
-        run_summary: dict[str, Any],
-        source_report: Path,
+    run_dir: Path,
+    run_summary: dict[str, Any],
+    source_report: Path,
 ) -> dict[str, Any]:
     source_run = source_report / "run"
     source_manifest = (
@@ -879,7 +889,7 @@ def apply_reused_fhe_report(
         row
         for row in read_jsonl(source_run / "edge_results.jsonl")
         if row.get("edge_record_type") == "model_inference_result"
-           and row.get("model_id") in FHE_MODEL_IDS
+        and row.get("model_id") in FHE_MODEL_IDS
     ]
     source_fhe_rows = [
         row for row in read_csv(source_run / "model_results.csv") if row.get("model_id") in FHE_MODEL_IDS
@@ -893,11 +903,11 @@ def apply_reused_fhe_report(
     write_csv_rows(run_dir / "reused_fhe_model_results.csv", MODEL_RESULT_COLUMNS, source_fhe_rows)
 
     for file_name in (
-            "latency.csv",
-            "latency_summary.json",
-            "model_inputs.jsonl",
-            "run_summary.json",
-            "performance_metrics.json",
+        "latency.csv",
+        "latency_summary.json",
+        "model_inputs.jsonl",
+        "run_summary.json",
+        "performance_metrics.json",
     ):
         source_file = source_run / file_name
         if source_file.exists():
@@ -926,8 +936,8 @@ def apply_reused_fhe_report(
 
 
 def infer_reused_fhe_device_label(
-        source_report: Path,
-        source_device_profile: dict[str, Any],
+    source_report: Path,
+    source_device_profile: dict[str, Any],
 ) -> str:
     path_text = " ".join(source_report.parts).lower()
     if "minipc" in path_text or "mini-pc" in path_text or "mini_pc" in path_text:
@@ -980,16 +990,19 @@ def presentation_device_lines(manifest: dict[str, Any]) -> list[str]:
 
 
 def merge_reused_fhe_latency(
-        fresh_latency_path: Path,
-        source_latency_path: Path,
-        source_fhe_records: list[dict[str, Any]],
+    fresh_latency_path: Path,
+    source_latency_path: Path,
+    source_fhe_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     fresh_rows = read_csv(fresh_latency_path)
     source_rows = [
         row
         for row in read_csv(source_latency_path)
         if row.get("fhe_cloud_sampled", "1") not in ("0", "false", "False")
-           and row.get("fhe_cloud_stage_ms") not in (None, "")
+        and (
+            row.get("cloud_fhe_operations_ms") not in (None, "")
+            or row.get("fhe_cloud_stage_ms") not in (None, "")
+        )
     ]
     if not fresh_rows or not source_rows:
         return {"source_fhe_latency_sample_count": 0}
@@ -998,6 +1011,13 @@ def merge_reused_fhe_latency(
     if "fhe_cloud_sampled" not in fields:
         insert_at = fields.index("fhe_cloud_stage_ms") if "fhe_cloud_stage_ms" in fields else len(fields)
         fields.insert(insert_at, "fhe_cloud_sampled")
+    if "cloud_fhe_operations_ms" not in fields:
+        insert_at = (
+            fields.index("fhe_cloud_stage_ms") + 1
+            if "fhe_cloud_stage_ms" in fields
+            else len(fields)
+        )
+        fields.insert(insert_at, "cloud_fhe_operations_ms")
 
     fhe_counts_by_timestamp: dict[str, int] = {}
     for record in source_fhe_records:
@@ -1018,14 +1038,23 @@ def merge_reused_fhe_latency(
     total_fhe_results = cumulative_fhe_counts[-1] if cumulative_fhe_counts else len(source_fhe_records)
     expanded_rows = 0
     for index, row in enumerate(fresh_rows):
-        fresh_fhe_ms = maybe_float(row.get("fhe_cloud_stage_ms")) or 0.0
+        fresh_fhe_ms = (
+            maybe_float(row.get("cloud_fhe_operations_ms"))
+            or maybe_float(row.get("fhe_cloud_stage_ms"))
+            or 0.0
+        )
         source_index = min(
             (index * len(source_rows)) // len(fresh_rows),
             len(source_rows) - 1,
-            )
-        source_fhe_ms = maybe_float(source_rows[source_index].get("fhe_cloud_stage_ms")) or 0.0
+        )
+        source_fhe_ms = (
+            maybe_float(source_rows[source_index].get("cloud_fhe_operations_ms"))
+            or maybe_float(source_rows[source_index].get("fhe_cloud_stage_ms"))
+            or 0.0
+        )
         row["fhe_cloud_sampled"] = 1
         row["fhe_cloud_stage_ms"] = round(source_fhe_ms, 3)
+        row["cloud_fhe_operations_ms"] = round(source_fhe_ms, 3)
         latency_delta = source_fhe_ms - fresh_fhe_ms
         add_latency_delta(row, "total_tick_ms", latency_delta)
         add_latency_delta(row, "event_to_model_ms", latency_delta)
@@ -1082,7 +1111,7 @@ def refresh_run_summary_artifacts(run_dir: Path, run_summary: dict[str, Any]) ->
             "forecast_quality_summary": run_summary.get("forecast_quality_summary"),
             "model_result_summary": run_summary.get("model_result_summary"),
         },
-        )
+    )
 
 
 def model_result_summary_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1135,14 +1164,14 @@ def write_csv_rows(path: Path, fields: list[str], rows: list[dict[str, Any]]) ->
 
 
 def run_summary_benchmark(
-        capture_path: Path,
-        config_path: Path,
-        out: Path,
-        runs: int,
-        interval_seconds: int,
+    capture_path: Path,
+    config_path: Path,
+    out: Path,
+    runs: int,
+    interval_seconds: int,
 ) -> dict[str, Any]:
     rows = []
-    for index in range(1, max(runs, 1) + 1):
+    for index in range(1, max(runs, 0) + 1):
         context = build_gateway_stream_context(
             input_path=capture_path,
             output_dir=out / "_discarded",
@@ -1164,12 +1193,35 @@ def run_summary_benchmark(
     csv_path = out / "summary.csv"
     json_path = out / "summary.json"
     with csv_path.open("w", **CSV_KWARGS) as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(handle, fieldnames=BENCHMARK_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
     summary = {"runs": rows, "totals": totals, "csv": str(csv_path), "json": str(json_path)}
     write_json(json_path, summary)
     return summary
+
+
+BENCHMARK_FIELDS = [
+    "run",
+    "elapsed_s",
+    "raw_events",
+    "cycles",
+    "model_results",
+    "cloud_fhe_ok",
+    "cloud_fhe_unavailable",
+    "cloud_fhe_ok_rate",
+    "raw_events_per_s",
+    "model_results_per_s",
+    "avg_tick_ms",
+    "p95_tick_ms",
+    "avg_edge_local_ms",
+    "p95_edge_local_ms",
+    "avg_cloud_fhe_ms",
+    "p95_cloud_fhe_ms",
+    "forecast_mae_w",
+    "forecast_rmse_w",
+    "forecast_r2",
+]
 
 
 def benchmark_row(index: int, summary: dict[str, Any], elapsed: float) -> dict[str, Any]:
@@ -1190,6 +1242,10 @@ def benchmark_row(index: int, summary: dict[str, Any], elapsed: float) -> dict[s
         "model_results_per_s": performance.get("model_results_per_wall_second"),
         "avg_tick_ms": latency.get("avg_total_tick_ms"),
         "p95_tick_ms": latency.get("p95_total_tick_ms"),
+        "avg_edge_local_ms": latency.get("avg_edge_local_operations_ms"),
+        "p95_edge_local_ms": latency.get("p95_edge_local_operations_ms"),
+        "avg_cloud_fhe_ms": latency.get("avg_cloud_fhe_operations_ms"),
+        "p95_cloud_fhe_ms": latency.get("p95_cloud_fhe_operations_ms"),
         "forecast_mae_w": quality.get("mae_w"),
         "forecast_rmse_w": quality.get("rmse_w"),
         "forecast_r2": quality.get("r2"),
@@ -1216,6 +1272,10 @@ def benchmark_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "mean_avg_tick_ms": mean(row["avg_tick_ms"] for row in rows),
         "mean_p95_tick_ms": mean(row["p95_tick_ms"] for row in rows),
+        "mean_avg_edge_local_ms": mean(row["avg_edge_local_ms"] for row in rows),
+        "mean_p95_edge_local_ms": mean(row["p95_edge_local_ms"] for row in rows),
+        "mean_avg_cloud_fhe_ms": mean(row["avg_cloud_fhe_ms"] for row in rows),
+        "mean_p95_cloud_fhe_ms": mean(row["p95_cloud_fhe_ms"] for row in rows),
         "mean_raw_events_per_s": mean(row["raw_events_per_s"] for row in rows),
     }
 
@@ -1224,9 +1284,9 @@ def cloud_fhe_status_counts(summary: dict[str, Any]) -> dict[str, int]:
     by_model = (summary.get("model_result_summary") or {}).get("by_model", {})
     counts = {"ok": 0, "unavailable": 0}
     for model_id in (
-            "fhe_long_term_load_forecast",
-            "fhe_nilm_disaggregation",
-            "fhe_cohort_benchmark",
+        "fhe_long_term_load_forecast",
+        "fhe_nilm_disaggregation",
+        "fhe_cohort_benchmark",
     ):
         status_counts = by_model.get(model_id, {}).get("status_counts", {})
         counts["ok"] += int(status_counts.get("ok", 0) or 0)
@@ -1242,9 +1302,9 @@ def ok_rate(counts: dict[str, Any]) -> float | None:
 
 
 def compare_models(
-        dataset_path: Path,
-        out: Path,
-        selected_alpha: float,
+    dataset_path: Path,
+    out: Path,
+    selected_alpha: float,
 ) -> dict[str, Any]:
     rows = read_csv(dataset_path)
     train_rows = [row for row in rows if row["split"] == "train"]
@@ -1294,9 +1354,9 @@ def compare_models(
 
 
 def write_existing_model_inference_summary(
-        out: Path,
-        model: dict[str, Any],
-        run_summary: dict[str, Any],
+    out: Path,
+    model: dict[str, Any],
+    run_summary: dict[str, Any],
 ) -> dict[str, Any]:
     quality = (run_summary.get("forecast_quality_summary") or {}).get("overall", {})
     latency = run_summary.get("latency_summary") or {}
@@ -1357,10 +1417,10 @@ def write_existing_model_inference_summary(
 
 
 def baseline(
-        name: str,
-        note: str,
-        test_rows: list[dict[str, str]],
-        predict: Callable[[dict[str, str]], float],
+    name: str,
+    note: str,
+    test_rows: list[dict[str, str]],
+    predict: Callable[[dict[str, str]], float],
 ) -> dict[str, Any]:
     predictions = [predict(row) for row in test_rows]
     metrics = forecast_metrics(predictions, target_values(test_rows))
@@ -1417,9 +1477,9 @@ def write_model_notes(path: Path, candidates: list[dict[str, Any]], selected_id:
 
 
 def write_existing_model_notes(
-        path: Path,
-        row: dict[str, Any],
-        model: dict[str, Any],
+    path: Path,
+    row: dict[str, Any],
+    model: dict[str, Any],
 ) -> None:
     report_summary = model.get("report_summary") or {}
     lines = [
@@ -1518,9 +1578,9 @@ def build_showcase_context(out: Path, manifest: dict[str, Any]) -> dict[str, Any
 
 
 def scenario_catalog(
-        manifest: dict[str, Any],
-        contracts: dict[str, Any],
-        fhe_rows_by_model: dict[str, list[dict[str, str]]],
+    manifest: dict[str, Any],
+    contracts: dict[str, Any],
+    fhe_rows_by_model: dict[str, list[dict[str, str]]],
 ) -> list[dict[str, str]]:
     statuses = {
         model: first_non_empty(rows, "inference_status") or "not observed"
@@ -1611,7 +1671,7 @@ def scenario_catalog(
             "scenario": "No FHE client or credentials",
             "what_happens": "The FHE stage records an unavailable result and the rest of the gateway continues.",
             "output": "actual report statuses="
-                      + ", ".join(f"{model}:{status}" for model, status in sorted(statuses.items())),
+            + ", ".join(f"{model}:{status}" for model, status in sorted(statuses.items())),
         },
         {
             "group": "FHE Cloud",
@@ -1653,10 +1713,10 @@ def first_non_empty(rows: list[dict[str, Any]], key: str) -> str | None:
 
 
 def screen_table(
-        rows: list[dict[str, Any]],
-        columns: list[str],
-        labels: list[str] | None = None,
-        limit: int = 6,
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    labels: list[str] | None = None,
+    limit: int = 6,
 ) -> list[str]:
     labels = labels or columns
     widths = [min(max(len(label), 10), 22) for label in labels]
@@ -1712,19 +1772,19 @@ def report_model_summary(model: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_report_docs(
-        out: Path,
-        source: str,
-        capture_path: Path,
-        config_path: Path,
-        run_summary: dict[str, Any],
-        benchmark: dict[str, Any],
-        model: dict[str, Any],
-        comparison: dict[str, Any],
-        videos_enabled: bool,
-        ffmpeg_bin: str,
-        video_width: int,
-        video_height: int,
-        video_fps: int,
+    out: Path,
+    source: str,
+    capture_path: Path,
+    config_path: Path,
+    run_summary: dict[str, Any],
+    benchmark: dict[str, Any],
+    model: dict[str, Any],
+    comparison: dict[str, Any],
+    videos_enabled: bool,
+    ffmpeg_bin: str,
+    video_width: int,
+    video_height: int,
+    video_fps: int,
 ) -> Path:
     config = load_json(config_path)
     latency = run_summary.get("latency_summary") or {}
@@ -1743,6 +1803,11 @@ def write_report_docs(
         "cycles": run_summary.get("snapshot_count"),
         "model_results": run_summary.get("model_result_count"),
         "latency_samples": latency.get("sample_count"),
+        "edge_local_latency_samples": latency.get("edge_local_sample_count"),
+        "edge_local_avg_ms": latency.get("avg_edge_local_operations_ms"),
+        "edge_local_p95_ms": latency.get("p95_edge_local_operations_ms"),
+        "cloud_fhe_avg_ms": latency.get("avg_cloud_fhe_operations_ms"),
+        "cloud_fhe_p95_ms": latency.get("p95_cloud_fhe_operations_ms"),
         "fhe_cloud_latency_samples": latency.get("fhe_cloud_sample_count"),
         "fhe_cloud_avg_ms": latency.get("avg_fhe_cloud_stage_ms"),
         "fhe_cloud_p95_ms": latency.get("p95_fhe_cloud_stage_ms"),
@@ -1758,8 +1823,8 @@ def write_report_docs(
         ),
         "report_tick_interval_seconds": performance.get("tick_interval_seconds"),
         "fhe_cloud_sample_interval_seconds": (
-                (config.get("fhe_cloud") or {}).get("sample_interval_seconds")
-                or (config.get("gateway_stream") or {}).get("fhe_cloud_sample_interval_seconds")
+            (config.get("fhe_cloud") or {}).get("sample_interval_seconds")
+            or (config.get("gateway_stream") or {}).get("fhe_cloud_sample_interval_seconds")
         ),
         "avg_tick_ms": latency.get("avg_total_tick_ms"),
         "p95_tick_ms": latency.get("p95_total_tick_ms"),
@@ -1877,6 +1942,8 @@ def write_readme(path: Path, manifest: dict[str, Any]) -> None:
         f"- Inference cycles: `{manifest['cycles']}`",
         f"- Latency samples: `{manifest['latency_samples']}`",
         f"- Average / p95 tick latency: `{manifest['avg_tick_ms']}` ms / `{manifest['p95_tick_ms']}` ms",
+        f"- Average / p95 edge-local operations: `{manifest.get('edge_local_avg_ms')}` ms / `{manifest.get('edge_local_p95_ms')}` ms",
+        f"- Average / p95 cloud FHE operations: `{manifest.get('cloud_fhe_avg_ms')}` ms / `{manifest.get('cloud_fhe_p95_ms')}` ms",
         f"- Raw events/s: `{manifest['raw_events_per_s']}`",
         f"- Runtime model: `{manifest['runtime_model']['model']}`",
         *fhe_lines,
@@ -1912,9 +1979,9 @@ def write_readme(path: Path, manifest: dict[str, Any]) -> None:
 
 
 def write_showcase_browser(
-        path: Path,
-        manifest: dict[str, Any],
-        showcase: dict[str, Any],
+    path: Path,
+    manifest: dict[str, Any],
+    showcase: dict[str, Any],
 ) -> None:
     videos = manifest.get("videos", [])
     model_section_title = (
@@ -1924,7 +1991,7 @@ def write_showcase_browser(
     )
     if videos:
         video_cards = "\n".join(
-            f"""
+        f"""
         <article class="video-card">
           <h3>{html.escape(video['title'])}</h3>
           <video controls preload="metadata">
@@ -1934,7 +2001,7 @@ def write_showcase_browser(
           <p>{html.escape(video['purpose'])}</p>
         </article>
         """
-            for video in videos
+        for video in videos
         )
     else:
         video_cards = """
@@ -1994,6 +2061,8 @@ a {{ color:#264c8a; }}
     <span class="metric">{manifest['cycles']} inference cycles</span>
     <span class="metric">{manifest['latency_samples']} latency samples</span>
     <span class="metric">p95 tick {manifest['p95_tick_ms']} ms</span>
+    <span class="metric">p95 edge local {manifest.get('edge_local_p95_ms')} ms</span>
+    <span class="metric">p95 cloud FHE {manifest.get('cloud_fhe_p95_ms')} ms</span>
     <span class="metric">{manifest['raw_events']} raw events</span>
     <span class="metric">runtime model {html.escape(manifest['runtime_model']['model'])}</span>
   </div>
@@ -2007,7 +2076,7 @@ a {{ color:#264c8a; }}
     <article class="panel"><h3>Received Telemetry</h3>{html_table(showcase['telemetry'], ['timestamp','device','field','value','source'], 8)}</article>
     <article class="panel"><h3>Snapshots</h3>{html_table(showcase['snapshots'], ['timestamp','household_power_w','household_power_source','plug_power_w','temperature_c','humidity_pct'], 8)}</article>
     <article class="panel"><h3>Feature Windows</h3>{html_table(showcase['features'], ['timestamp','plug_power_mean_1m_w','household_power_mean_1m_w','device_to_household_ratio','plug_stale_flag'], 8)}</article>
-    <article class="panel"><h3>Latency Samples</h3>{html_table(showcase['latency'], ['cycle','preprocessing_stage_ms','feature_stage_ms','fhe_cloud_sampled','fhe_cloud_stage_ms','model_stage_ms','total_tick_ms'], 8)}</article>
+    <article class="panel"><h3>Latency Samples</h3>{html_table(showcase['latency'], ['cycle','edge_local_operations_ms','cloud_fhe_operations_ms','fhe_cloud_sampled','preprocessing_stage_ms','feature_stage_ms','model_stage_ms','total_tick_ms'], 8)}</article>
   </section>
 
   <h2>Edge Analytics / ML Outputs</h2>
@@ -2083,11 +2152,11 @@ def collect_device_profile(config: dict[str, Any]) -> dict[str, Any]:
         "python_version": platform.python_version(),
         "cpu_count": os.cpu_count(),
         "containerized": Path("/.dockerenv").exists()
-                         or os.environ.get("HYFHENET_CONTAINERIZED") == "1",
+        or os.environ.get("HYFHENET_CONTAINERIZED") == "1",
         "configured_device_count": len(devices),
         "configured_device_roles": role_counts,
         "configured_pipeline_interval_seconds": (
-                config.get("pipeline") or {}
+            config.get("pipeline") or {}
         ).get("interval_seconds"),
         "mqtt_host": (config.get("zigbee_gateway") or {}).get("host"),
         "mqtt_topic": (config.get("zigbee_gateway") or {}).get("topic"),
@@ -2095,13 +2164,13 @@ def collect_device_profile(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_report_videos(
-        out: Path,
-        manifest: dict[str, Any],
-        showcase: dict[str, Any],
-        ffmpeg_bin: str,
-        width: int,
-        height: int,
-        fps: int,
+    out: Path,
+    manifest: dict[str, Any],
+    showcase: dict[str, Any],
+    ffmpeg_bin: str,
+    width: int,
+    height: int,
+    fps: int,
 ) -> list[dict[str, Any]]:
     resolved_ffmpeg = resolve_executable(ffmpeg_bin)
     if resolved_ffmpeg is None:
@@ -2283,6 +2352,10 @@ def metrics_video_slides(manifest: dict[str, Any]) -> list[VideoSlide]:
     latency_lines = [
         f"Average total tick latency: {manifest['avg_tick_ms']} ms",
         f"p95 total tick latency: {manifest['p95_tick_ms']} ms",
+        f"Average edge-local operations: {manifest.get('edge_local_avg_ms')} ms",
+        f"p95 edge-local operations: {manifest.get('edge_local_p95_ms')} ms",
+        f"Average cloud FHE operations: {manifest.get('cloud_fhe_avg_ms')} ms",
+        f"p95 cloud FHE operations: {manifest.get('cloud_fhe_p95_ms')} ms",
         f"Raw event throughput: {manifest['raw_events_per_s']} events per second",
     ]
     if manifest.get("fhe_cloud_latency_samples"):
@@ -2361,8 +2434,8 @@ def metrics_video_slides(manifest: dict[str, Any]) -> list[VideoSlide]:
 
 
 def input_processing_video_slides(
-        manifest: dict[str, Any],
-        showcase: dict[str, Any],
+    manifest: dict[str, Any],
+    showcase: dict[str, Any],
 ) -> list[VideoSlide]:
     normalized = showcase.get("normalized") or []
     normalized_lines = []
@@ -2472,6 +2545,7 @@ def input_processing_video_slides(
             "Latency instrumentation: each stage is measured",
             [
                 "Every inference tick records per-stage and total latency.",
+                "Edge-local operations and cloud FHE operations are summarized separately.",
                 "The report requires at least 100 samples so p95/p99 numbers are meaningful.",
                 f"This run measured p95 total tick latency of {manifest['p95_tick_ms']} ms.",
             ],
@@ -2481,14 +2555,15 @@ def input_processing_video_slides(
                 showcase["latency"],
                 [
                     "cycle",
+                    "edge_local_operations_ms",
+                    "cloud_fhe_operations_ms",
                     "preprocessing_stage_ms",
                     "feature_stage_ms",
                     "fhe_cloud_sampled",
-                    "fhe_cloud_stage_ms",
                     "model_stage_ms",
                     "total_tick_ms",
                 ],
-                ["cycle", "pre ms", "feat ms", "FHE run", "FHE ms", "ML ms", "total ms"],
+                ["cycle", "edge ms", "cloud ms", "pre ms", "feat ms", "FHE run", "ML ms", "total ms"],
                 limit=6,
             ),
         ),
@@ -2496,8 +2571,8 @@ def input_processing_video_slides(
 
 
 def edge_analytics_video_slides(
-        manifest: dict[str, Any],
-        showcase: dict[str, Any],
+    manifest: dict[str, Any],
+    showcase: dict[str, Any],
 ) -> list[VideoSlide]:
     comparison_title = (
         "Inference summary: existing runtime model"
@@ -2626,8 +2701,8 @@ def edge_analytics_video_slides(
 
 
 def fhe_video_slides(
-        manifest: dict[str, Any],
-        showcase: dict[str, Any],
+    manifest: dict[str, Any],
+    showcase: dict[str, Any],
 ) -> list[VideoSlide]:
     contracts = showcase["cloud_contracts"]
     endpoint_lines = []
@@ -2766,7 +2841,7 @@ def fhe_video_slides(
                 ],
                 ["timestamp", "model", "status", "label", "score", "details"],
                 limit=9,
-                ),
+            ),
         ),
         VideoSlide(
             "FHE scenario coverage",
@@ -2791,8 +2866,8 @@ def fhe_video_slides(
 
 
 def deployment_video_slides(
-        manifest: dict[str, Any],
-        showcase: dict[str, Any],
+    manifest: dict[str, Any],
+    showcase: dict[str, Any],
 ) -> list[VideoSlide]:
     report_action_line = (
         "It uses the existing edge model, benchmarks replay throughput, renders videos, and writes the browser HTML."
@@ -2902,6 +2977,8 @@ def deployment_video_slides(
                 *deployment_device_lines,
                 f"avg_tick_ms: {manifest.get('avg_tick_ms')}",
                 f"p95_tick_ms: {manifest.get('p95_tick_ms')}",
+                f"edge_local_avg_ms: {manifest.get('edge_local_avg_ms')}",
+                f"cloud_fhe_avg_ms: {manifest.get('cloud_fhe_avg_ms')}",
                 f"raw_events_per_s: {manifest.get('raw_events_per_s')}",
             ],
         ),
@@ -2914,12 +2991,12 @@ def json_preview(payload: Any, indent: int = 2, limit: int = 10) -> list[str]:
 
 
 def render_video(
-        ffmpeg_bin: str,
-        output_path: Path,
-        slides: list[VideoSlide],
-        width: int,
-        height: int,
-        fps: int,
+    ffmpeg_bin: str,
+    output_path: Path,
+    slides: list[VideoSlide],
+    width: int,
+    height: int,
+    fps: int,
 ) -> None:
     build_dir = output_path.parent / f"_{output_path.stem}_build"
     if build_dir.exists():
@@ -2944,7 +3021,7 @@ def render_video(
         concat_path.write_text(
             "\n".join(f"file '{concat_path_for(path)}'" for path in slide_paths) + "\n",
             encoding="utf-8",
-            )
+        )
         run_ffmpeg(
             [
                 ffmpeg_bin,
@@ -2967,14 +3044,14 @@ def render_video(
 
 
 def render_slide(
-        ffmpeg_bin: str,
-        slide: VideoSlide,
-        output_path: Path,
-        build_dir: Path,
-        index: int,
-        width: int,
-        height: int,
-        fps: int,
+    ffmpeg_bin: str,
+    slide: VideoSlide,
+    output_path: Path,
+    build_dir: Path,
+    index: int,
+    width: int,
+    height: int,
+    fps: int,
 ) -> None:
     font_path = find_font_file()
     mono_font_path = find_mono_font_file() or font_path
@@ -3009,7 +3086,7 @@ def render_slide(
             build_dir,
             f"slide_{index:03d}_screen_title.txt",
             slide.screen_title or "gateway screen",
-            )
+        )
         filters.append(
             drawtext_filter(
                 screen_title,
@@ -3109,12 +3186,12 @@ def render_slide(
 
 
 def drawtext_filter(
-        text_file: Path,
-        font_path: Path | None,
-        size: int,
-        color: str,
-        x: int,
-        y: int,
+    text_file: Path,
+    font_path: Path | None,
+    size: int,
+    color: str,
+    x: int,
+    y: int,
 ) -> str:
     options = []
     if font_path is not None:
@@ -3270,6 +3347,12 @@ def latency_summary(path: Path) -> dict[str, Any] | None:
                 fhe_cloud_stage_ms=maybe_float(row.get("fhe_cloud_stage_ms")),
                 service_stage_ms=maybe_float(row.get("service_stage_ms")),
                 model_stage_ms=maybe_float(row.get("model_stage_ms")),
+                edge_local_operations_ms=maybe_float(
+                    row.get("edge_local_operations_ms")
+                ),
+                cloud_fhe_operations_ms=maybe_float(
+                    row.get("cloud_fhe_operations_ms")
+                ),
                 total_tick_ms=maybe_float(row.get("total_tick_ms")),
                 event_to_model_ms=maybe_float(row.get("event_to_model_ms")),
             )
@@ -3299,6 +3382,8 @@ def latency_columns() -> list[str]:
         fhe_cloud_stage_ms=None,
         service_stage_ms=None,
         model_stage_ms=None,
+        edge_local_operations_ms=None,
+        cloud_fhe_operations_ms=None,
         total_tick_ms=None,
         event_to_model_ms=None,
     )

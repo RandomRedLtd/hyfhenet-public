@@ -214,6 +214,7 @@ class GatewayStreamingPipeline:
             latency_sample = runtime.finish_tick(tick_timestamp, self.monotonic_fn())
             if latency_sample is not None:
                 self.sink.append_latency_sample(latency_sample, context)
+                self.observer.on_latency_sample(latency_sample, context)
             runtime.next_snapshot_time += timedelta(seconds=runtime.tick_interval_seconds)
 
     def _pump_source_events(self, context: PipelineContext, event_queue: Queue[Any]) -> None:
@@ -229,7 +230,7 @@ class GatewayStreamingPipeline:
     def _tick_clock_scale(context: PipelineContext) -> float:
         gateway_config = context.config["gateway_stream"]
         zigbee_mode = gateway_config.get("zigbee_source", "replay")
-        if zigbee_mode == "zigbee_mqtt":
+        if zigbee_mode in {"zigbee_mqtt", "edf_service_sdk"}:
             return 1.0
         if bool(gateway_config.get("follow_event_timing", False)):
             return float(gateway_config.get("replay_speed_multiplier", 1.0) or 1.0)
@@ -247,6 +248,19 @@ class GatewayStreamingPipeline:
     def _stream_runtime_summary(context: PipelineContext) -> dict[str, Any]:
         gateway_config = context.config["gateway_stream"]
         zigbee_mode = gateway_config.get("zigbee_source", "replay")
+        if zigbee_mode == "edf_service_sdk":
+            listen_seconds = int(
+                context.config["edf_service_sdk"].get("listen_seconds", 0)
+            )
+            return {
+                "stream_mode": context.config.get("_stream_mode_override", "edf_sdk_live"),
+                "mqtt_listen_seconds": listen_seconds,
+                "stop_reason": (
+                    "manual_stop_or_external_interruption"
+                    if listen_seconds < 0
+                    else "configured_listen_window_elapsed"
+                ),
+            }
         if zigbee_mode != "zigbee_mqtt":
             return {}
         listen_seconds = int(context.config["zigbee_gateway"].get("listen_seconds", 0))

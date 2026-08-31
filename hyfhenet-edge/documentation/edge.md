@@ -5,6 +5,7 @@ This document describes the runtime pipeline. Use `deployment.md` for Docker dep
 ## Inputs
 
 - Zigbee2MQTT telemetry from two smart plugs and one temperature/humidity sensor
+- EDF service SDK `DeviceApi` events from the virtual datalogger
 - optional Linky/TIC household-meter fields: `SINSTS`, `PAPP`, `EAST`, `BASE`, `EASF01`, `household_power_w`, `household_energy_wh`
 - replay CSVs with the same normalized input shape
 
@@ -21,6 +22,7 @@ household_power_w = plug_1_power_w + plug_2_power_w
 | `stream-replay` | Run the pipeline from `data/zigbee_mqtt_capture.csv`. |
 | `mqtt-live` | Subscribe to Zigbee2MQTT and run continuously or for a configured window. |
 | `mqtt-capture` | Save MQTT telemetry to replay CSV, optionally running the pipeline. |
+| `edf-sdk-live` | Subscribe to EDF service SDK `DeviceApi` streams and run the same edge pipeline. |
 | `benchmark-pipeline` | Run repeated replay passes and write timing/count summaries. |
 | `train-edge-forecast` | Train the local one-minute Ridge model. |
 | `prepare-edge-report` | Build the device-specific report package. |
@@ -37,7 +39,11 @@ preprocessing
   -> ai_modeling
 ```
 
-`cloud_forecast_prep` now prepares the runtime rows for all configured cloud models: long-horizon forecast, NILM disaggregation, and cohort benchmarking. `fhe_cloud_inference` encrypts the selected row with the Concrete-ML client, calls the matching `/api/fhe/{model}/inference` endpoint, decrypts the response, and writes one model result per configured cloud task. Without cloud credentials or FHE dependencies, it writes explicit `unavailable` results and the run continues.
+`cloud_forecast_prep` now prepares the runtime rows for all configured cloud models: long-horizon forecast, NILM disaggregation, and cohort benchmarking. `fhe_cloud_inference` downloads the architecture-specific Concrete-ML client files when needed, encrypts the selected row, calls the matching `/api/fhe/{model}/inference` endpoint, decrypts the response, and writes one model result per configured cloud task. Without cloud credentials or FHE dependencies, it writes explicit `unavailable` results and the run continues.
+
+`edf-sdk-live` imports `service_sdk_python.api.device.DeviceApi` only when that mode runs. It calls `DeviceApi.from_env()` and listens to `edf_service_sdk.streams`, defaulting to `TEMPERATURE,POWER,APPARENT_POWER,METER_INDEXES`. SDK stream names are mapped before normalization; by default `TEMPERATURE -> temperature`, `POWER -> power`, `APPARENT_POWER -> PAPP`, and `METER_INDEXES -> BASE`. If EDF confirms that `POWER` is aggregate household consumption, set `HYFHENET_EDF_SDK_STREAM_FIELD_MAP=POWER=household_power_w` or the matching JSON config override.
+
+For live MQTT deployments, `fhe_cloud.async_enabled` or `HYFHENET_FHE_ASYNC=true` dispatches remote FHE through a bounded background worker. Completed FHE results are written by the main pipeline thread on a later tick, so local preprocessing, feature, service, and local-model stages do not wait on slow cloud inference. Report mode should keep the default synchronous path when exact per-sample FHE timing evidence is required.
 
 ## Run Artifacts
 

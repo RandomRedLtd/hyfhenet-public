@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from queue import Empty, Queue
 from typing import Any, Sequence
 
 from ..ai.models import (
@@ -32,7 +35,11 @@ from ..core.interfaces import (
     StreamingSink,
 )
 from ..core.models import (
+    CloudCohortFeatureRecord,
+    CloudForecastFeatureRecord,
+    CloudNilmFeatureRecord,
     EdgeForecastEvaluationRecord,
+    ModelInferenceResult,
     RawTelemetryEvent,
     StreamingPipelineRuntime,
 )
@@ -333,6 +340,7 @@ class StreamingFheCloudInferenceStage(StreamingPipelineStage):
         self.inference_runner = inference_runner
         self.forecast_tracker = ForecastEvaluationTracker()
         self._next_inference_tick: datetime | None = None
+        self._async_dispatcher: AsyncFheDispatcher | None = None
 
     def _get_inference_runner(self, context: PipelineContext) -> FheInferenceRunner:
         if self.inference_runner is None:
@@ -350,9 +358,10 @@ class StreamingFheCloudInferenceStage(StreamingPipelineStage):
     ) -> None:
         runner = self._get_inference_runner(context)
         task_ids = ",".join(runner.task_ids()) or "none"
+        mode = "async" if _fhe_async_enabled(context.config) else "sync"
         observer.on_pipeline_step(
             "fhe_cloud_inference",
-            f"configured tasks={task_ids}",
+            f"configured tasks={task_ids} mode={mode}",
             context,
         )
 
@@ -365,6 +374,7 @@ class StreamingFheCloudInferenceStage(StreamingPipelineStage):
             observer: StreamingObserver,
     ) -> None:
         self.forecast_tracker.resolve_due(tick_timestamp, runtime, context, sink)
+        self._drain_async_results(runtime, context, sink, observer, record_latency=True)
         if runtime.latest_feature_window is None or runtime.latest_cloud_forecast_feature is None:
             return
         runner = self._get_inference_runner(context)
@@ -382,6 +392,25 @@ class StreamingFheCloudInferenceStage(StreamingPipelineStage):
                 context,
             )
             return
+        async_enabled = _fhe_async_enabled(context.config)
+        if async_enabled:
+            dispatcher = self._get_async_dispatcher(context, runner)
+            queued = dispatcher.submit(
+                runtime.latest_cloud_forecast_feature,
+                runtime.latest_cloud_nilm_feature,
+                runtime.latest_cloud_cohort_feature,
+                context,
+            )
+            if not queued:
+                observer.on_pipeline_step(
+                    "fhe_cloud_inference",
+                    (
+                        f"skip remote FHE ts={tick_timestamp.isoformat()} "
+                        f"pending={dispatcher.pending_count}"
+                    ),
+                    context,
+                )
+                return
         model_input = build_model_input(
             runtime.latest_feature_window,
             runtime.latest_cloud_forecast_feature,
@@ -392,19 +421,103 @@ class StreamingFheCloudInferenceStage(StreamingPipelineStage):
         observer.on_pipeline_step(
             "fhe_cloud_inference",
             (
-                f"infer {task_ids} "
+                f"{'queue' if async_enabled else 'infer'} {task_ids} "
                 f"ts={runtime.latest_cloud_forecast_feature.timestamp.isoformat()} "
                 f"feature_set={runtime.latest_cloud_forecast_feature.feature_set_id}"
             ),
             context,
         )
+        if async_enabled:
+            return
         runtime.mark_fhe_cloud_sampled()
+        cloud_started_at = time.monotonic()
         results = runner.infer_cloud_features(
             runtime.latest_cloud_forecast_feature,
             runtime.latest_cloud_nilm_feature,
             runtime.latest_cloud_cohort_feature,
             context,
         )
+        cloud_elapsed_ms = _cloud_fhe_operations_ms_from_results(results)
+        runtime.record_tick_stage_duration(
+            "cloud_fhe_operations",
+            cloud_elapsed_ms
+            if cloud_elapsed_ms is not None
+            else max(time.monotonic() - cloud_started_at, 0.0) * 1000.0,
+        )
+        self._record_model_results(results, runtime, context, sink, observer)
+
+    def on_complete(
+            self,
+            runtime: StreamingPipelineRuntime,
+            context: PipelineContext,
+            sink: StreamingSink,
+            observer: StreamingObserver,
+    ) -> None:
+        if self._async_dispatcher is None:
+            return
+        wait_seconds = _fhe_async_drain_timeout_seconds(context.config)
+        deadline = time.monotonic() + wait_seconds
+        while self._async_dispatcher.pending_count > 0 and time.monotonic() < deadline:
+            self._drain_async_results(runtime, context, sink, observer, record_latency=False)
+            time.sleep(0.01)
+        self._drain_async_results(runtime, context, sink, observer, record_latency=False)
+        self._async_dispatcher.stop()
+
+    def _get_async_dispatcher(
+            self,
+            context: PipelineContext,
+            runner: FheInferenceRunner,
+    ) -> "AsyncFheDispatcher":
+        if self._async_dispatcher is None:
+            self._async_dispatcher = AsyncFheDispatcher(
+                runner,
+                max_pending_requests=_fhe_max_pending_requests(context.config),
+            )
+        return self._async_dispatcher
+
+    def _drain_async_results(
+            self,
+            runtime: StreamingPipelineRuntime,
+            context: PipelineContext,
+            sink: StreamingSink,
+            observer: StreamingObserver,
+            record_latency: bool,
+    ) -> None:
+        if self._async_dispatcher is None:
+            return
+        completions = self._async_dispatcher.poll_completed()
+        if not completions:
+            return
+        total_cloud_ms = round(sum(item.cloud_operations_ms for item in completions), 3)
+        if record_latency:
+            runtime.mark_fhe_cloud_sampled()
+            runtime.record_tick_stage_duration("cloud_fhe_operations", total_cloud_ms)
+        for completion in completions:
+            if completion.error:
+                observer.on_pipeline_step(
+                    "fhe_cloud_inference",
+                    (
+                        f"async remote FHE failed ts={completion.request_timestamp.isoformat()} "
+                        f"error={completion.error}"
+                    ),
+                    context,
+                )
+            self._record_model_results(
+                completion.results,
+                runtime,
+                context,
+                sink,
+                observer,
+            )
+
+    def _record_model_results(
+            self,
+            results: list[ModelInferenceResult],
+            runtime: StreamingPipelineRuntime,
+            context: PipelineContext,
+            sink: StreamingSink,
+            observer: StreamingObserver,
+    ) -> None:
         runtime.latest_model_results.extend(results)
         for model_result in results:
             sink.append_model_result(model_result, context)
@@ -433,6 +546,121 @@ class StreamingFheCloudInferenceStage(StreamingPipelineStage):
         while self._next_inference_tick <= tick_timestamp:
             self._next_inference_tick += timedelta(seconds=sample_interval_seconds)
         return True
+
+
+_ASYNC_FHE_STOP = object()
+
+
+@dataclass(frozen=True)
+class AsyncFheRequest:
+    request_timestamp: datetime
+    forecast_feature: CloudForecastFeatureRecord
+    nilm_feature: CloudNilmFeatureRecord | None
+    cohort_feature: CloudCohortFeatureRecord | None
+    context: PipelineContext
+
+
+@dataclass(frozen=True)
+class AsyncFheCompletion:
+    request_timestamp: datetime
+    results: list[ModelInferenceResult]
+    cloud_operations_ms: float
+    error: str | None = None
+
+
+class AsyncFheDispatcher:
+    def __init__(
+            self,
+            runner: FheInferenceRunner,
+            max_pending_requests: int = 1,
+            monotonic_fn=None,
+    ) -> None:
+        self.runner = runner
+        self.max_pending_requests = max(1, int(max_pending_requests))
+        self.monotonic_fn = monotonic_fn or time.monotonic
+        self._requests: Queue[Any] = Queue()
+        self._completions: Queue[AsyncFheCompletion] = Queue()
+        self._pending_count = 0
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stopped = False
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return self._pending_count
+
+    def submit(
+            self,
+            forecast_feature: CloudForecastFeatureRecord,
+            nilm_feature: CloudNilmFeatureRecord | None,
+            cohort_feature: CloudCohortFeatureRecord | None,
+            context: PipelineContext,
+    ) -> bool:
+        with self._lock:
+            if self._stopped or self._pending_count >= self.max_pending_requests:
+                return False
+            self._pending_count += 1
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name="hyfhenet-fhe-dispatcher",
+                    daemon=True,
+                )
+                self._thread.start()
+        self._requests.put(
+            AsyncFheRequest(
+                request_timestamp=forecast_feature.timestamp,
+                forecast_feature=forecast_feature,
+                nilm_feature=nilm_feature,
+                cohort_feature=cohort_feature,
+                context=context,
+            )
+        )
+        return True
+
+    def poll_completed(self) -> list[AsyncFheCompletion]:
+        completions: list[AsyncFheCompletion] = []
+        while True:
+            try:
+                completions.append(self._completions.get_nowait())
+            except Empty:
+                return completions
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+        self._requests.put(_ASYNC_FHE_STOP)
+
+    def _run(self) -> None:
+        while True:
+            request = self._requests.get()
+            if request is _ASYNC_FHE_STOP:
+                return
+            started_at = self.monotonic_fn()
+            results: list[ModelInferenceResult] = []
+            error = None
+            try:
+                results = self.runner.infer_cloud_features(
+                    request.forecast_feature,
+                    request.nilm_feature,
+                    request.cohort_feature,
+                    request.context,
+                )
+            except Exception as exc:
+                error = f"{exc.__class__.__name__}: {exc}"
+            elapsed_ms = round(max(self.monotonic_fn() - started_at, 0.0) * 1000.0, 3)
+            cloud_operations_ms = _cloud_fhe_operations_ms_from_results(results)
+            self._completions.put(
+                AsyncFheCompletion(
+                    request_timestamp=request.request_timestamp,
+                    results=results,
+                    cloud_operations_ms=cloud_operations_ms or elapsed_ms,
+                    error=error,
+                )
+            )
+            with self._lock:
+                self._pending_count = max(self._pending_count - 1, 0)
 
 
 class StreamingServiceStage(StreamingPipelineStage):
@@ -747,9 +975,11 @@ def describe_streaming_stages(
                 if sample_interval_seconds is not None
                 else ""
             )
+            mode_detail = " async" if _fhe_async_enabled(config) else ""
             parts.append(
                 "fhe_cloud_inference="
                 + ",".join(runner.task_ids() or ["none"])
+                + mode_detail
                 + interval_detail
             )
         elif isinstance(stage, StreamingServiceStage):
@@ -799,6 +1029,32 @@ def _as_float(value: Any) -> float | None:
     return None
 
 
+def _cloud_fhe_operations_ms_from_results(model_results) -> float | None:
+    cloud_keys = (
+        "cloud_fhe_client_files_download_ms",
+        "cloud_fhe_key_upload_ms",
+        "cloud_fhe_inference_wait_ms",
+    )
+    values: list[float] = []
+    for result in model_results:
+        try:
+            details = json.loads(result.details)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(details, dict):
+            continue
+        timing = details.get("timing_ms")
+        if not isinstance(timing, dict):
+            continue
+        for key in cloud_keys:
+            value = _as_float(timing.get(key))
+            if value is not None:
+                values.append(value)
+    if not values:
+        return None
+    return round(sum(values), 3)
+
+
 def _fhe_forecast_task_config(config: dict[str, Any]) -> dict[str, Any]:
     tasks = config.get("fhe_cloud", {}).get("tasks", {})
     return tasks.get("forecast") or tasks.get("long_term_load_forecast", {})
@@ -814,6 +1070,35 @@ def _fhe_sample_interval_seconds(config: dict[str, Any]) -> int | None:
     if interval_seconds <= 0:
         return None
     return interval_seconds
+
+
+def _fhe_async_enabled(config: dict[str, Any]) -> bool:
+    value = config.get("fhe_cloud", {}).get("async_enabled", False)
+    return _as_bool(value)
+
+
+def _fhe_max_pending_requests(config: dict[str, Any]) -> int:
+    value = config.get("fhe_cloud", {}).get("max_pending_requests", 1)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _fhe_async_drain_timeout_seconds(config: dict[str, Any]) -> float:
+    value = config.get("fhe_cloud", {}).get("async_drain_timeout_seconds", 0.0)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 

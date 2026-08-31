@@ -94,8 +94,13 @@
     "client_cert_path": null,
     "client_key_path": null,
     "ca_bundle_path": null,
+    "architecture": null,
     "request_timeout_seconds": 60.0,
     "allow_insecure_http": false,
+    "sample_interval_seconds": null,
+    "async_enabled": false,
+    "max_pending_requests": 1,
+    "async_drain_timeout_seconds": 0.0,
     "tasks": {
       "forecast": {
         "enabled": true,
@@ -136,6 +141,11 @@
       "role": "environment_sensor",
       "name": "zigbee_room_climate_sensor",
       "location": "participant_home"
+    },
+    "edf_virtual_datalogger": {
+      "role": "smart_plug",
+      "name": "edf_virtual_datalogger",
+      "location": "edf_service_sdk"
     }
   },
   "gateway_stream": {
@@ -205,5 +215,53 @@
     "client_cert_path": null,
     "client_key_path": null,
     "tls_insecure": false
+  },
+  "edf_service_sdk": {
+    "streams": ["TEMPERATURE", "POWER", "APPARENT_POWER", "METER_INDEXES"],
+    "listen_seconds": 30,
+    "poll_timeout_seconds": 0.1,
+    "default_device_id": "edf_virtual_datalogger",
+    "default_device_role": "smart_plug",
+    "register_unknown_devices": true,
+    "include_unsupported_fields": false,
+    "supported_fields": [
+      "temperature",
+      "humidity",
+      "battery",
+      "state",
+      "power",
+      "voltage",
+      "current",
+      "energy",
+      "energy_today",
+      "energy_yesterday",
+      "energy_month",
+      "linkquality",
+      "active_power",
+      "active_power_w",
+      "meter_power_w",
+      "household_power_w",
+      "energy_wh",
+      "household_energy_wh",
+      "PAPP",
+      "SINSTS",
+      "BASE",
+      "EAST",
+      "EASF01"
+    ],
+    "stream_field_map": {
+      "TEMPERATURE": "temperature",
+      "HUMIDITY": "humidity",
+      "POWER": "power",
+      "APPARENT_POWER": "PAPP",
+      "ACTIVE_POWER": "active_power",
+      "ACTIVE_POWER_W": "active_power_w",
+      "HOUSEHOLD_POWER": "household_power_w",
+      "HOUSEHOLD_POWER_W": "household_power_w",
+      "CONSUMPTION": "energy",
+      "ENERGY": "energy",
+      "ENERGY_WH": "energy_wh",
+      "METER_INDEXES": "BASE"
+    }
   }
 }

@@ -6,6 +6,10 @@ This repository contains the edge gateway runtime: Zigbee2MQTT/replay ingestion,
 
 Cloud API serving, FHE model training, compiled server artifacts, model registries, and cloud datasets live in the separate cloud/FHE repositories.
 
+The live gateway can also consume EDF service SDK `DeviceApi` events via `edf-sdk-live`. This mode uses `DeviceApi.from_env()`, listens to `TEMPERATURE,POWER,APPARENT_POWER,METER_INDEXES` by default, and feeds the same preprocessing and inference stages as the Zigbee2MQTT source. The private SDK is optional for normal replay/MQTT runs and must be installed only in environments that use this mode.
+
+The FHE client auto-detects the local CPU architecture, normalizes it to the backend bundle names `x86_64` or `aarch64`, sends it as `X-Architecture`, and keeps downloaded client packages under an architecture-specific cache path. Set `HYFHENET_FHE_ARCHITECTURE` only when a test environment needs to override auto-detection.
+
 ## Quick Deploy
 
 For MiniPC or Raspberry Pi deployment, use [documentation/deployment.md](documentation/deployment.md).
@@ -24,6 +28,11 @@ docker compose --profile capture run --rm capture
 docker compose --profile report run --rm report
 ```
 
+The Compose services use separate default image names for gateway/capture/report. Keep
+`HYFHENET_GATEWAY_INSTALL_FHE_DEPS=false` for the lightweight live gateway, and set
+`HYFHENET_REPORT_INSTALL_FHE_DEPS=true` only when the report image must run the full
+Concrete/FHE client.
+
 To generate processing/inference evidence without fitting report-local models:
 
 ```bash
@@ -37,9 +46,14 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe main.py stream-replay --input data\zigbee_mqtt_capture.csv --output artifacts\gateway_stream --as-fast-as-possible
+.\.venv\Scripts\python.exe main.py edf-sdk-live --output artifacts\gateway_edf_sdk_live --edf-streams TEMPERATURE,POWER,APPARENT_POWER,METER_INDEXES
 ```
 
 Install `requirements-fhe.txt` only when testing the optional full FHE client stack outside Docker.
+For slow live cloud calls, set `HYFHENET_FHE_ASYNC=true` and optionally
+`HYFHENET_FHE_SAMPLE_INTERVAL_SECONDS=60`. For report runs, keep async disabled and use
+`HYFHENET_REPORT_FHE_SAMPLE_INTERVAL_SECONDS` plus `HYFHENET_REPORT_FHE_TASKS` when only
+selected FHE tasks are needed.
 
 ## Key Paths
 

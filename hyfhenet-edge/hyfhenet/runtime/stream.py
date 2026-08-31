@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from ..core.config import load_pipeline_config
+from ..core.config import load_pipeline_config, select_fhe_tasks
 from ..core.interfaces import (
     PipelineContext,
     StreamingEventSource,
@@ -13,6 +13,7 @@ from ..core.interfaces import (
 )
 from ..ingestion.stream_sources import (
     CaptureRawEventSource,
+    EdfServiceSdkEventSource,
     TimestampPacedStreamSource,
     ZigbeeCsvReplaySource,
     ZigbeeMqttSensorSource,
@@ -40,6 +41,7 @@ def build_gateway_stream_context(
     max_replay_sleep_seconds: float | None = None,
     replay_delay_ms: int | None = None,
     zigbee_gateway_overrides: dict[str, Any] | None = None,
+    edf_service_sdk_overrides: dict[str, Any] | None = None,
     fhe_cloud_overrides: dict[str, Any] | None = None,
 ) -> PipelineContext:
     config = load_pipeline_config(config_path)
@@ -73,11 +75,21 @@ def build_gateway_stream_context(
         config["zigbee_gateway"].update(
             {k: v for k, v in zigbee_gateway_overrides.items() if v is not None}
         )
+    if edf_service_sdk_overrides:
+        config["edf_service_sdk"].update(
+            {k: v for k, v in edf_service_sdk_overrides.items() if v is not None}
+        )
     if fhe_cloud_overrides:
         fhe_cloud_config = config.setdefault("fhe_cloud", {})
+        selected_fhe_tasks = fhe_cloud_overrides.get("enabled_tasks")
         fhe_cloud_config.update(
-            {k: v for k, v in fhe_cloud_overrides.items() if v is not None}
+            {
+                k: v
+                for k, v in fhe_cloud_overrides.items()
+                if v is not None and k != "enabled_tasks"
+            }
         )
+        select_fhe_tasks(config, selected_fhe_tasks)
     return PipelineContext(
         input_path=input_path,
         output_dir=Path(output_dir),
@@ -203,6 +215,44 @@ def run_gateway_zigbee_mqtt_live(
     return summary.to_record()
 
 
+def run_gateway_edf_sdk_live(
+    output_dir: Path | str,
+    config_path: Path | str | None = None,
+    interval_seconds: int | None = None,
+    edf_streams: list[str] | str | None = None,
+    edf_listen_seconds: int | None = None,
+    edf_default_device_id: str | None = None,
+    edf_default_device_role: str | None = None,
+    edf_stream_field_map: dict[str, str] | None = None,
+    edf_register_unknown_devices: bool | None = None,
+    edf_include_unsupported_fields: bool | None = None,
+    console_log_level: str | None = None,
+    fhe_cloud_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = build_gateway_stream_context(
+        input_path="edf-service-sdk://DeviceApi.from_env",
+        output_dir=output_dir,
+        config_path=config_path,
+        interval_seconds=interval_seconds,
+        input_source="edf_service_sdk",
+        zigbee_source="edf_service_sdk",
+        console_log_level=console_log_level,
+        edf_service_sdk_overrides={
+            "streams": edf_streams,
+            "listen_seconds": edf_listen_seconds,
+            "default_device_id": edf_default_device_id,
+            "default_device_role": edf_default_device_role,
+            "stream_field_map": edf_stream_field_map,
+            "register_unknown_devices": edf_register_unknown_devices,
+            "include_unsupported_fields": edf_include_unsupported_fields,
+        },
+        fhe_cloud_overrides=fhe_cloud_overrides,
+    )
+    context.config["_stream_mode_override"] = "edf_sdk_live"
+    summary = build_gateway_stream_pipeline_for_context(context, write_artifacts=True).run(context)
+    return summary.to_record()
+
+
 def run_gateway_zigbee_mqtt_capture(
     capture_output_path: Path | str,
     output_dir: Path | str,
@@ -318,17 +368,21 @@ def _annotate_live_stream_summary(
 def _zigbee_mode_for_input_source(input_source: str) -> str:
     if input_source == "zigbee_mqtt":
         return "zigbee_mqtt"
+    if input_source in {"edf_service_sdk", "edf_sdk"}:
+        return "edf_service_sdk"
     return "replay"
 
 
 def _input_source_for_zigbee_mode(zigbee_mode: str) -> str:
+    if zigbee_mode == "edf_service_sdk":
+        return "edf_service_sdk"
     if _is_live_zigbee_mode(zigbee_mode):
         return "zigbee_mqtt"
     return "csv"
 
 
 def _is_live_zigbee_mode(zigbee_mode: str) -> bool:
-    return zigbee_mode == "zigbee_mqtt"
+    return zigbee_mode in {"zigbee_mqtt", "edf_service_sdk"}
 
 
 __all__ = [
@@ -338,6 +392,7 @@ __all__ = [
     "ZigbeeCsvReplaySource",
     "CaptureRawEventSource",
     "ZigbeeMqttSensorSource",
+    "EdfServiceSdkEventSource",
     "TimestampPacedStreamSource",
     "build_gateway_stream_context",
     "build_gateway_event_source",
@@ -345,5 +400,6 @@ __all__ = [
     "build_streaming_observer",
     "run_gateway_stream_replay",
     "run_gateway_zigbee_mqtt_live",
+    "run_gateway_edf_sdk_live",
     "run_gateway_zigbee_mqtt_capture",
 ]

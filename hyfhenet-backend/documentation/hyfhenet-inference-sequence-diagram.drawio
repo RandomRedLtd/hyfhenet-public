@@ -1,0 +1,155 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="hJ_bHxmUGFHq82qYuQas">
+    <mxGraphModel dx="2562" dy="898" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-1" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontStyle=1" value="Edge G&lt;span style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;ateway&lt;/span&gt;" vertex="1">
+          <mxGeometry height="30" width="100" x="70" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-2" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontStyle=1" value="Cloud" vertex="1">
+          <mxGeometry height="30" width="80" x="240" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-3" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="120" y="640" as="sourcePoint" />
+            <mxPoint x="120" y="50" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-4" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="280" y="640" as="sourcePoint" />
+            <mxPoint x="280" y="50" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-7" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontStyle=1" value="Admin" vertex="1">
+          <mxGeometry height="30" width="80" x="400" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-8" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="440" y="50" as="sourcePoint" />
+            <mxPoint x="440" y="640" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-9" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="440" y="60" as="sourcePoint" />
+            <mxPoint x="280" y="60" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-10" connectable="0" parent="IlMRXSNCB4tnuJVEMCHa-9" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=8;" value="Enroll new IoT device" vertex="1">
+          <mxGeometry relative="1" x="0.09" as="geometry">
+            <mxPoint x="7" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-11" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=8;" value="Create new IoT device" vertex="1">
+          <mxGeometry height="40" width="80" x="240" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-12" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=8;" value="Setup an IoT device with API key" vertex="1">
+          <mxGeometry height="40" width="80" x="80" y="140" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-15" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=8;" value="Generate a FHE key pair" vertex="1">
+          <mxGeometry height="40" width="80" x="80" y="220" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-18" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="120" y="200" as="sourcePoint" />
+            <mxPoint x="280" y="200" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-19" connectable="0" parent="IlMRXSNCB4tnuJVEMCHa-18" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=8;" value="Request model client files" vertex="1">
+          <mxGeometry relative="1" x="-0.085" y="2" as="geometry">
+            <mxPoint y="2" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-20" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="120" y="280" as="sourcePoint" />
+            <mxPoint x="280" y="280" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-21" connectable="0" parent="IlMRXSNCB4tnuJVEMCHa-20" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=8;" value="Upload evaluation key" vertex="1">
+          <mxGeometry relative="1" x="0.145" as="geometry">
+            <mxPoint x="-22" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-22" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=8;" value="Prepare inference input" vertex="1">
+          <mxGeometry height="40" width="80" x="80" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-23" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="120" y="360" as="sourcePoint" />
+            <mxPoint x="280" y="360" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-24" connectable="0" parent="IlMRXSNCB4tnuJVEMCHa-23" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=8;" value="Send inference request" vertex="1">
+          <mxGeometry relative="1" x="0.235" y="-2" as="geometry">
+            <mxPoint x="-29" y="-2" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-26" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=8;" value="Decrypt the result" vertex="1">
+          <mxGeometry height="40" width="80" x="80" y="380" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-27" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="120" y="439.8" as="sourcePoint" />
+            <mxPoint x="280" y="439.8" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-28" connectable="0" parent="IlMRXSNCB4tnuJVEMCHa-27" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=8;" value="Send inference request" vertex="1">
+          <mxGeometry relative="1" x="0.235" y="-2" as="geometry">
+            <mxPoint x="-29" y="-2" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-29" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=8;" value="Decrypt the result" vertex="1">
+          <mxGeometry height="40" width="80" x="80" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-30" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="-120" y="40" as="sourcePoint" />
+            <mxPoint x="-120" y="640" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-31" connectable="0" parent="IlMRXSNCB4tnuJVEMCHa-30" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];rotation=270;fontStyle=1" value="TIME" vertex="1">
+          <mxGeometry relative="1" x="0.6917" y="2" as="geometry">
+            <mxPoint x="-2" y="-196" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-32" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="520" y="40" as="sourcePoint" />
+            <mxPoint x="520" y="640" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="IlMRXSNCB4tnuJVEMCHa-33" connectable="0" parent="IlMRXSNCB4tnuJVEMCHa-32" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];rotation=270;fontStyle=1" value="TIME" vertex="1">
+          <mxGeometry relative="1" x="0.6917" y="2" as="geometry">
+            <mxPoint x="-2" y="-196" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="2OWH5T3GLx8f4Lt3lvZZ-1" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontStyle=1" value="User App" vertex="1">
+          <mxGeometry height="30" width="100" x="-90" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="2OWH5T3GLx8f4Lt3lvZZ-2" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="-40" y="640" as="sourcePoint" />
+            <mxPoint x="-40" y="50" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="2OWH5T3GLx8f4Lt3lvZZ-3" edge="1" parent="1" style="endArrow=classic;html=1;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="-40" y="520" as="sourcePoint" />
+            <mxPoint x="120" y="520" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="2OWH5T3GLx8f4Lt3lvZZ-4" connectable="0" parent="2OWH5T3GLx8f4Lt3lvZZ-3" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontSize=8;" value="Send insight request" vertex="1">
+          <mxGeometry relative="1" x="0.1286" y="2" as="geometry">
+            <mxPoint x="-20" y="2" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="2OWH5T3GLx8f4Lt3lvZZ-6" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=8;" value="Receive insight result" vertex="1">
+          <mxGeometry height="40" width="80" x="-80" y="540" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

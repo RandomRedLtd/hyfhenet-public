@@ -9,6 +9,7 @@ from ..core.models import (
     CloudForecastTrainingExample,
     FeatureWindow,
     GatewayStreamRunSummary,
+    LatencySample,
     LoadEventMarker,
     ModelInferenceResult,
     RawTelemetryEvent,
@@ -152,6 +153,19 @@ class ConsoleStreamingObserver(NullStreamingObserver):
             f"ts={model_result.timestamp.isoformat()} id={model_result.model_id} "
             f"status={model_result.inference_status} "
             f"label={model_result.prediction_label} score={model_result.prediction_score}"
+        )
+
+    def on_latency_sample(
+        self,
+        latency_sample: LatencySample,
+        context: PipelineContext,
+    ) -> None:
+        self._write(
+            "[timing] "
+            f"ts={latency_sample.tick_timestamp.isoformat()} "
+            f"edge_local_ms={latency_sample.edge_local_operations_ms} "
+            f"cloud_fhe_ms={latency_sample.cloud_fhe_operations_ms} "
+            f"total_ms={latency_sample.total_tick_ms}"
         )
 
     def on_stream_complete(
