@@ -14,6 +14,13 @@ Components:
 
 <br><br><br><br><br>
 
+## Third-Party Components
+This project includes components from the following third-party libraries:
+**ConcreteML**: Licensed under the BSD-3-Clause-Clear license.
+See [ConcreteML readme](https://github.com/zama-ai/concrete-ml?tab=License-1-ov-file#readme) for details.
+
+<br>
+
 <img src="./assets/image.png" alt="Funded by the European Union" width="400"/>
 
 **Funded by the European Union under the Horizon Europe Programme through the O-CEI project (Grant Agreement No. 101189589). Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union or the granting authority. Neither the European Union nor the granting authority can be held responsible for them.**
