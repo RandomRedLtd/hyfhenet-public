@@ -16,6 +16,14 @@ This component is designed to be a backend client library for the [HyFHE-net edg
 
 ### 1.3. Install dependencies:
 
+**Since Zama doesn't publish Concrete-Python wheel for aarch64 one is provided under the [releases page of this repository](https://github.com/RandomRedLtd/hyfhenet-public/releases/tag/concrete_python_2.10.0)**
+
+Therefore, in case you want to run this on a aarch64 device, e.g. Raspberry PI, you must first install the provided concrete-python wheel:
+
+`$ pip install concrete_python-2.10.0-cp311-cp311-linux_aarch64.whl --no-deps`
+
+And then install the rest of the dependencies:
+
 `$ ./install-deps.sh`
 
 ### 1.4. Create a `.env` file from `.env.example` and set environment variables: `API_URL` and `API_KEY`
