@@ -26,7 +26,7 @@ Remote FHE API URLs must use HTTPS by default. Plain HTTP is rejected unless `HY
 ## Quick New-Device Flow
 
 1. Install Docker Engine and the Docker Compose plugin.
-2. Clone the repo: `git clone https://github.com/RandomRedLtd/HYFHENET.git && cd HYFHENET`.
+2. Clone the repo: `git clone https://github.com/RandomRedLtd/hyfhenet-public.git && cd hyfhenet-public/hyfhenet-edge`.
 3. Create config: `cp .env.example .env`.
 4. Edit `.env`: set `HYFHENET_ZIGBEE_HOST`, MQTT credentials/TLS if needed, `FHE_URL=https://hyfhe.net`, `FHE_API=<api-key>`, and `HYFHENET_REPORT_VIDEOS=false`.
 5. Build the lightweight gateway: `docker compose build gateway`.
@@ -41,8 +41,8 @@ Remote FHE API URLs must use HTTPS by default. Plain HTTP is rejected unless `HY
 On the edge device:
 
 ```bash
-git clone https://github.com/RandomRedLtd/HYFHENET.git
-cd HYFHENET
+git clone https://github.com/RandomRedLtd/hyfhenet-public.git
+cd hyfhenet-public/hyfhenet-edge
 cp .env.example .env
 nano .env
 ```
@@ -116,6 +116,8 @@ docker compose build gateway
 docker compose up -d gateway
 docker compose logs -f gateway
 ```
+
+For bare-metal FHE without Docker, see [qemu_fhe_runbook.md](qemu_fhe_runbook.md).
 
 The default Docker base image and Debian packages are multi-architecture. Start with the default image on Raspberry Pi; optional full FHE-client dependencies are platform-sensitive and should be validated separately on the target OS.
 

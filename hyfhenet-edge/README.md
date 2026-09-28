@@ -70,6 +70,7 @@ selected FHE tasks are needed.
 
 - [architecture.md](documentation/architecture.md): edge/cloud boundary and module map
 - [deployment.md](documentation/deployment.md): MiniPC and Raspberry Pi deployment
+- [qemu_fhe_runbook.md](documentation/qemu_fhe_runbook.md): bare-metal QEMU x86_64 emulation for FHE on Raspberry Pi
 - [edge.md](documentation/edge.md): pipeline stages and run artifacts
 - [edge_cloud_partitioning_strategy.md](documentation/edge_cloud_partitioning_strategy.md): measured partitioning, cloud datasets, FHE contracts, and model-selection guidance
 - [reference/](documentation/reference/): external pilot reference material, not needed for deployment

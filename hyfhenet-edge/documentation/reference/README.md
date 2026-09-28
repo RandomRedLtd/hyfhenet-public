@@ -4,9 +4,7 @@ These files are source/reference material for the pilot context. They are not re
 
 Operational documentation lives one level up:
 
-- `architecture.md`
-- `deployment.md`
-- `edge.md`
-- `edge_cloud_partitioning_strategy.md`
-- `fhe.md`
-- `submission.md`
+- [architecture.md](../architecture.md)
+- [deployment.md](../deployment.md)
+- [edge.md](../edge.md)
+- [edge_cloud_partitioning_strategy.md](../edge_cloud_partitioning_strategy.md)

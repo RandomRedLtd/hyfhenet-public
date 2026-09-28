@@ -30,8 +30,8 @@ docker compose version
 ## 2. Get The Code
 
 ```bash
-git clone https://github.com/RandomRedLtd/hyfhenet.git
-cd hyfhenet
+git clone https://github.com/RandomRedLtd/hyfhenet-public.git
+cd hyfhenet-public/hyfhenet-edge
 git checkout main
 ```
 
@@ -166,7 +166,7 @@ artifacts/edge_report/model/model_comparison.csv
 Copy the report off the edge device:
 
 ```bash
-scp -r <user>@<edge-ip>:~/hyfhenet/artifacts/edge_report ./edge_report_device
+scp -r <user>@<edge-ip>:~/hyfhenet-public/hyfhenet-edge/artifacts/edge_report ./edge_report_device
 ```
 
 ## Troubleshooting
