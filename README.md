@@ -17,9 +17,22 @@ Components:
 ## Third-Party Components
 This project includes components from the following third-party libraries:
 **ConcreteML**: Licensed under the BSD-3-Clause-Clear license.
+
 See [ConcreteML readme](https://github.com/zama-ai/concrete-ml?tab=License-1-ov-file#readme) for details.
 
 <br>
+
+This repository distributes a prebuilt wheel containing software
+licensed by ZAMA under the BSD 3-Clause Clear License.
+
+**Concrete**: Licensed under the BSD-3-Clause-Clear license.
+
+See [Concrete readme](https://github.com/zama-ai/concrete?tab=License-1-ov-file) for details.
+
+The applicable third-party license is included in:
+THIRD_PARTY_LICENSES
+
+<br><br>
 
 <img src="./assets/image.png" alt="Funded by the European Union" width="400"/>
 
